@@ -1,0 +1,22 @@
+# This file tracks properties of this Flutter project.
+# Used by Flutter toolchain for upgrade and migration reporting.
+version:
+  revision: "0000000000000000000000000000000000000000"
+  channel: "[user-branch]"
+
+project_type: app
+
+# Tracks metadata for the flutter migrate command
+migration:
+  platforms:
+    - platform: root
+      create_revision: 0000000000000000000000000000000000000000
+      base_revision: 0000000000000000000000000000000000000000
+    - platform: android
+      create_revision: 0000000000000000000000000000000000000000
+      base_revision: 0000000000000000000000000000000000000000
+
+  # User provided section
+  unmanaged_files:
+    - 'lib/main.dart'
+    - 'ios/Runner.xcodeproj/project.pbxproj'
