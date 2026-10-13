@@ -38,7 +38,8 @@ class GlossaryMemory {
     }
   }
 
-  static final RegExp _token = RegExp(r'\p{Lu}[\p{L}\-’\']{2,}', unicode: true);
+  static final RegExp _token =
+      RegExp("\\p{Lu}[\\p{L}\\-’']{2,}", unicode: true);
 
   List<String> _capitalisedTokens(String text) {
     final out = <String>[];

@@ -76,32 +76,31 @@ class _DetectionLineState extends ConsumerState<DetectionLine> {
     final theme = AppTypography.buildTextTheme();
     final detection = widget.detection;
 
-    final String message;
+    final String body;
     final Color color;
     final String signature;
     if (widget.detecting) {
-      message = '[System]: ${t('source_detecting')}';
+      body = t('source_detecting');
       color = AppColors.neonCyan;
       signature = 'detecting';
     } else if (detection != null) {
-      message = '[System]: ${t(
-        'source_detected',
-        {
-          'name': detection.name,
-          'confidence': detection.confidence.toStringAsFixed(1),
-        },
-      )}';
+      body = t('source_detected', {
+        'name': detection.name,
+        'confidence': detection.confidence.toStringAsFixed(1),
+      });
       color = AppColors.neonGreen;
       signature = 'detected:${detection.code}:${detection.confidence}';
     } else if (widget.hasFile) {
-      message = '[System]: ${t('source_failed')}';
+      body = t('source_failed');
       color = AppColors.warning;
       signature = 'failed';
     } else {
-      message = '[System]: ${t('source_none')}';
+      body = t('source_none');
       color = AppColors.textDisabled;
       signature = 'none';
     }
+    const prefix = '[System]: ';
+    final message = prefix + body;
 
     _animateTo(message, signature);
     final shown = _revealed.isEmpty && message.isNotEmpty ? '' : _revealed;

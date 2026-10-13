@@ -11,7 +11,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // PDFium backend used by the extractor, the reader and the colour sampler.
-  pdfrxFlutterInitialize();
+  await pdfrxFlutterInitialize();
 
   final prefs = await SharedPreferences.getInstance();
   const secureStorage = FlutterSecureStorage(
