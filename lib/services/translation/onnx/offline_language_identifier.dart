@@ -71,6 +71,17 @@ class OfflineLanguageIdentifier {
         score += 4 * (wordHits / totalWords) * 5;
       }
 
+      // 4. letters that only this language uses. Ukrainian "і/ї/є/ґ" against
+      //    Russian "ы/ъ/э" is the classic case: two profiles that share every
+      //    function word and are told apart by four glyphs.
+      if (candidate.distinctive.isNotEmpty) {
+        var found = 0;
+        for (final rune in text.runes) {
+          if (candidate.distinctive.contains(rune)) found++;
+        }
+        if (found > 0) score += 2 * (found > 5 ? 1.0 : found / 5);
+      }
+
       if (score > bestScore) {
         bestScore = score;
         best = candidate.language;
@@ -86,6 +97,44 @@ class OfflineLanguageIdentifier {
     );
   }
 
+  /// How far a script alone carries the answer.
+  ///
+  /// Some writing systems belong to exactly one language of our table, so the
+  /// script is decisive even when the text has no spaces and the function-word
+  /// score stays low (Japanese, Korean, Thai…). Others are shared by a family
+  /// (Latin, Arabic, Cyrillic) and only raise the floor.
+  static const Map<String, double> _scriptFloor = {
+    'Jpan': 99.0,
+    'Hang': 98.0,
+    'Khmr': 96.0,
+    'Laoo': 96.0,
+    'Mymr': 96.0,
+    'Thai': 95.0,
+    'Grek': 94.0,
+    'Hebr': 94.0,
+    'Armn': 93.0,
+    'Geor': 93.0,
+    'Sinh': 93.0,
+    'Ethi': 92.0,
+    'Hans': 90.0,
+    'Hant': 90.0,
+    'Gujr': 88.0,
+    'Guru': 88.0,
+    'Knda': 88.0,
+    'Mlym': 88.0,
+    'Orya': 88.0,
+    'Taml': 88.0,
+    'Telu': 88.0,
+    'Beng': 85.0,
+    'Olck': 80.0,
+    'Deva': 72.0,
+    'Arab': 70.0,
+    'Cyrl': 70.0,
+    'Tibt': 85.0,
+    'Nkoo': 90.0,
+    'Tfng': 85.0,
+  };
+
   /// Maps the raw score onto something a human reads as a probability.
   static double _toConfidence(double score, String script) {
     // A script match alone is worth ~55%; strong function word evidence pushes
@@ -96,8 +145,10 @@ class OfflineLanguageIdentifier {
         ? 0.6
         : 0.0;
     final value = (score + bonus) / 5.6 * 100;
-    if (value <= 35) return 35;
-    return value > 99.9 ? 99.9 : double.parse(value.toStringAsFixed(1));
+    final floor = _scriptFloor[script] ?? 0.0;
+    final result = value > floor ? value : floor;
+    if (result <= 35) return 35;
+    return result > 99.9 ? 99.9 : double.parse(result.toStringAsFixed(1));
   }
 
   /// Which script dominates the sample.
@@ -205,17 +256,21 @@ class OfflineLanguageIdentifier {
     _Profile('vie_Latn', 'Latn', [' và ', ' của ', ' không ', ' các ', ' này '],
         {'và', 'của', 'không', 'các', 'này', 'trong', 'được', 'một', 'cho', 'với'}),
     _Profile('rus_Cyrl', 'Cyrl', [' и ', ' в ', ' не ', ' что ', ' на '],
-        {'и', 'в', 'не', 'что', 'на', 'с', 'по', 'для', 'как', 'это'}),
+        {'и', 'в', 'не', 'что', 'на', 'с', 'по', 'для', 'как', 'это'},
+        {0x044B, 0x044A, 0x044D}),
     _Profile('ukr_Cyrl', 'Cyrl', [' і ', ' в ', ' не ', ' на ', ' що '],
-        {'і', 'в', 'не', 'на', 'що', 'з', 'та', 'для', 'як', 'це'}),
+        {'і', 'в', 'не', 'на', 'що', 'з', 'та', 'для', 'як', 'це'},
+        {0x0456, 0x0457, 0x0454, 0x0491}),
     _Profile('ell_Grek', 'Grek', [' και ', ' το ', ' της ', ' είναι ', ' για '],
         {'και', 'το', 'της', 'είναι', 'για', 'με', 'στο', 'τα', 'του', 'από'}),
     _Profile('arb_Arab', 'Arab', [' ال', ' في ', ' من ', ' على ', ' أن '],
         {'في', 'من', 'على', 'أن', 'إلى', 'عن', 'مع', 'هذا', 'كان', 'التي'}),
     _Profile('pes_Arab', 'Arab', [' ال', ' در ', ' به ', ' از ', ' که '],
-        {'در', 'به', 'از', 'که', 'را', 'با', 'این', 'برای', 'است', 'های'}),
+        {'در', 'به', 'از', 'که', 'را', 'با', 'این', 'برای', 'است', 'های'},
+        {0x06CC, 0x06A9, 0x06AF, 0x0698, 0x0686, 0x067E}),
     _Profile('urd_Arab', 'Arab', [' کے ', ' کی ', ' میں ', ' اور ', ' ہے '],
-        {'کے', 'کی', 'میں', 'اور', 'ہے', 'سے', 'کا', 'نے', 'پر', 'تھا'}),
+        {'کے', 'کی', 'میں', 'اور', 'ہے', 'سے', 'کا', 'نے', 'پر', 'تھا'},
+        {0x06D2, 0x0679, 0x0688, 0x067A, 0x06BE, 0x0649}),
     _Profile('heb_Hebr', 'Hebr', [' את ', ' של ', ' לא ', ' על ', ' כי '],
         {'את', 'של', 'לא', 'על', 'כי', 'עם', 'זה', 'הוא', 'כל', 'אשר'}),
     _Profile('hin_Deva', 'Deva', [' के ', ' की ', ' में ', ' और ', ' है '],
@@ -241,7 +296,8 @@ class OfflineLanguageIdentifier {
 
 /// One candidate language.
 class _Profile {
-  const _Profile(this.code, this.script, this.markers, this.words);
+  const _Profile(this.code, this.script, this.markers, this.words,
+      [this.distinctive = const {}]);
 
   final String code;
   final String script;
@@ -251,6 +307,9 @@ class _Profile {
 
   /// Exact word hits.
   final Set<String> words;
+
+  /// Code points that practically only occur in this language.
+  final Set<int> distinctive;
 
   FloresLanguage get language => FloresCatalog.byCode(code);
 }

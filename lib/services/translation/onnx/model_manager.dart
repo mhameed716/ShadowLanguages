@@ -51,6 +51,7 @@ class ModelSpec {
       fileNames: [
         'nllb-encoder.onnx',
         'encoder_model.onnx',
+        'encoder_model_quantized.onnx',
         'nllb200-distilled-600M-encoder.onnx',
         'encoder.onnx',
       ],
@@ -62,6 +63,7 @@ class ModelSpec {
       labelEnglish: 'NLLB-200 decoder',
       fileNames: [
         'nllb-decoder.onnx',
+        'decoder_model_merged.onnx',
         'decoder_model.onnx',
         'nllb200-distilled-600M-decoder.onnx',
         'decoder.onnx',
@@ -72,7 +74,12 @@ class ModelSpec {
       kind: ModelKind.tokenizer,
       labelArabic: 'مُقطِّع الكلمات (SentencePiece)',
       labelEnglish: 'SentencePiece tokenizer',
-      fileNames: ['tokenizer.model', 'sentencepiece.model', 'spiece.model'],
+      fileNames: [
+        'tokenizer.model',
+        'sentencepiece.bpe.model',
+        'sentencepiece.model',
+        'spiece.model',
+      ],
       minBytes: 200 * 1024,
       extensions: ['.model'],
     ),
@@ -383,6 +390,12 @@ class ModelManager {
   }
 
   // --------------------------------------------------------------- validation
+
+  /// Checks that [file] really is the model it claims to be.
+  ///
+  /// Public so the downloader can verify what it fetched with the same rules
+  /// the manual import uses.
+  Future<void> validateFile(File file, ModelSpec spec) => _validate(spec, file);
 
   Future<void> _validate(ModelSpec spec, File file) async {
     final bytes = file.lengthSync();

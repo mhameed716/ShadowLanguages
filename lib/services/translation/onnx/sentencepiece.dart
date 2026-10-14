@@ -149,25 +149,22 @@ class SentencePieceTokenizer {
   // ----------------------------------------------------------------- encoding
 
   /// Encodes [text] into token ids (no special tokens added).
+  ///
+  /// Every word carries the leading space marker, exactly as the model was
+  /// trained (`add_dummy_prefix`): "hello world" becomes `▁hello` `▁world`.
   List<int> encode(String text) {
     final out = <int>[];
     for (final word in _normalise(text).split(' ')) {
       if (word.isEmpty) continue;
-      final symbol = word.startsWith(kSpaceMarker)
-          ? word
-          : (out.isEmpty ? kSpaceMarker : '') + word;
-      final padded = out.isEmpty && !symbol.startsWith(kSpaceMarker)
-          ? '$kSpaceMarker$symbol'
-          : symbol;
-      for (final piece in _bpe(padded)) {
+      final symbol =
+          word.startsWith(kSpaceMarker) ? word : '$kSpaceMarker$word';
+      for (final piece in _bpe(symbol)) {
         final id = _index[piece];
         if (id == null) {
+          // Unknown character: models trained with byte fallback have a piece
+          // per byte, so "Ω" becomes <0xCE> <0xA9> instead of <unk>.
           final byteId = _byteFallback(piece);
-          if (byteId != null) {
-            out.add(byteId);
-          } else {
-            out.add(unkId);
-          }
+          out.add(byteId ?? unkId);
         } else {
           out.add(id);
         }
@@ -207,19 +204,11 @@ class SentencePieceTokenizer {
   }
 
   int? _byteFallback(String piece) {
-    if (piece.length == 6 && piece.startsWith('<0x') && piece.endsWith('>')) {
-      final value = int.tryParse(piece.substring(3, 5), radix: 16);
-      if (value != null) {
-        return pieceToId('<0x${value.toRadixString(16).padLeft(2, '0')}>') >= 0
-            ? pieceToId('<0x${value.toRadixString(16).padLeft(2, '0')}>')
-            : null;
-      }
-    }
-    // byte fallback pieces look like `<0x41>`; when the model has them we map
-    // raw bytes through them.
     final bytes = utf8.encode(piece);
-    if (bytes.length == 1) {
-      final id = pieceToId('<0x${bytes.first.toRadixString(16).padLeft(2, '0').toUpperCase()}>');
+    if (bytes.length != 1) return null;
+    final hex = bytes.first.toRadixString(16).padLeft(2, '0');
+    for (final candidate in ['<0x${hex.toUpperCase()}>', '<0x$hex>']) {
+      final id = pieceToId(candidate);
       if (id >= 0) return id;
     }
     return null;

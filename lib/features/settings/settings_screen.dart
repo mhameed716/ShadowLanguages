@@ -6,10 +6,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/di/providers.dart';
 import '../../core/localization/strings.dart';
+import '../../core/utils/job_cancellation.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/utils/formatters.dart';
 import '../../services/translation/gemini_client.dart';
+import '../../services/translation/onnx/model_downloader.dart';
 import '../../services/translation/onnx/model_manager.dart';
 import '../../services/translation/translation_options.dart';
 import '../terminal/terminal_controller.dart';
@@ -611,6 +613,58 @@ class _OfflineSectionState extends ConsumerState<_OfflineSection> {
   double _progress = 0;
   String? _note;
 
+  bool _downloading = false;
+  double _downloadProgress = 0;
+  String? _downloadLabel;
+  ModelDownloader? _downloader;
+
+  /// Fetches the missing model files **once**. After this the phone can stay in
+  /// airplane mode forever.
+  Future<void> _download() async {
+    final t = ref.read(stringsProvider);
+    final inventory = ref.read(modelInventoryProvider).valueOrNull ??
+        await ref.read(modelInventoryProvider.future);
+    final downloader = _downloader = ref.read(modelDownloaderProvider);
+    setState(() {
+      _downloading = true;
+      _downloadProgress = 0;
+      _downloadLabel = null;
+    });
+    try {
+      final done = await downloader.downloadMissing(
+        inventory: inventory,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() {
+            _downloadProgress = progress.ratio;
+            _downloadLabel = progress.label;
+          });
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _downloading = false;
+        _note = done.isEmpty
+            ? t('models_download_failed')
+            : t('models_download_done');
+      });
+      ref.invalidate(modelInventoryProvider);
+      ref.invalidate(translationClientProvider);
+      ref.read(translationPipelineProvider).resetEngine();
+    } on JobCancelledException {
+      if (mounted) setState(() => _downloading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _downloading = false;
+          _note = '${t('models_download_failed')}: $e';
+        });
+      }
+    } finally {
+      _downloader = null;
+    }
+  }
+
   Future<void> _import() async {
     final t = ref.read(stringsProvider);
     try {
@@ -747,14 +801,66 @@ class _OfflineSectionState extends ConsumerState<_OfflineSection> {
             const SizedBox(height: 8),
           ],
 
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _downloading || _importing ? null : _download,
+                  icon: _downloading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_for_offline, size: 16),
+                  label: Text(t('models_download')),
+                ),
+              ),
+              if (_downloading) ...[
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: () {
+                    _downloader?.cancel();
+                    setState(() => _downloading = false);
+                  },
+                  child: Text(t('models_cancel')),
+                ),
+              ],
+            ],
+          ),
+          if (_downloading) ...[
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: _downloadProgress == 0 ? null : _downloadProgress,
+              color: widget.accent,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _downloadLabel == null
+                  ? t('models_downloading', {'p': '0'})
+                  : '${_downloadLabel!} · ${(_downloadProgress * 100).toStringAsFixed(0)}%',
+              style: theme.bodySmall?.copyWith(fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            t('models_download_note'),
+            style: theme.bodySmall?.copyWith(fontSize: 11),
+          ),
+          const SizedBox(height: 10),
           OutlinedButton.icon(
-            onPressed: _importing ? null : _import,
-            icon: const Icon(Icons.file_download, size: 16),
+            onPressed: _importing || _downloading ? null : _import,
+            icon: const Icon(Icons.file_open, size: 16),
             label: Text(t('models_import')),
           ),
           const SizedBox(height: 8),
           Text(
             t('models_help'),
+            style: theme.bodySmall?.copyWith(fontSize: 11),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            t('models_ocr_manual'),
             style: theme.bodySmall?.copyWith(fontSize: 11),
           ),
 

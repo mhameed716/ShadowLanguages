@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Gemini API calls -->
+    <!--
+      Translation itself needs NO network: NLLB-200 and the OCR run on the
+      device. INTERNET is used for exactly one thing — the optional one-time
+      model download (and for the optional cloud engine, if it is enabled).
+    -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 

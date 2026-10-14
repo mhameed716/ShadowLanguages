@@ -9,6 +9,7 @@ import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/pdf/pdf_engine.dart';
 import '../../services/translation/gemini_client.dart';
+import '../../services/translation/onnx/model_downloader.dart';
 import '../../services/translation/onnx/model_manager.dart';
 import '../../services/translation/onnx/nllb_translation_client.dart';
 import '../../services/translation/onnx/offline_language_identifier.dart';
@@ -73,6 +74,16 @@ final modelManagerProvider = Provider<ModelManager>((ref) {
   );
   ref.onDispose(manager.dispose);
   return manager;
+});
+
+/// Fetches the model files once; after that the app needs no connection.
+final modelDownloaderProvider = Provider<ModelDownloader>((ref) {
+  final downloader = ModelDownloader(
+    manager: ref.watch(modelManagerProvider),
+    onLog: ref.watch(logBusProvider).info,
+  );
+  ref.onDispose(downloader.dispose);
+  return downloader;
 });
 
 /// Which model files are present right now.
