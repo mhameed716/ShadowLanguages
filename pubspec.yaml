@@ -1,9 +1,11 @@
 name: shadow_languages
 description: >-
-  ShadowLanguages — a cyberpunk PDF translation terminal for Android.
-  Extracts the text layer of any PDF, translates it with Google Gemini while
-  keeping every original coordinate, then injects the translation back over the
-  artwork so images, colours, fonts and tables survive untouched.
+  ShadowLanguages — a cyberpunk PDF translation terminal for Android that runs
+  completely offline. It extracts the text layer of any PDF, reads the text
+  hidden inside images with an on-device OCR engine, translates it with
+  Meta NLLB-200 running locally through ONNX Runtime, then injects the
+  translation back over the artwork so images, colours, fonts and tables
+  survive untouched.
 publish_to: "none"
 version: 1.0.0+1
 
@@ -26,8 +28,11 @@ dependencies:
   # pdf
   pdfrx: ^2.6.5
 
-  # networking
+  # networking (only used when the optional cloud engine is enabled)
   dio: ^5.4.0
+
+  # on-device inference: Meta NLLB-200 + the OCR models run here, no network
+  flutter_onnxruntime: ^1.9.0
 
   # files & storage
   file_picker: ^8.0.0

@@ -29,6 +29,9 @@ enum FailureKind {
   pdfNoText,
 
   fontCoverage,
+
+  /// The on-device model files are missing, incomplete or unusable.
+  modelMissing,
   storage,
   outOfMemory,
   cancelled,
@@ -145,6 +148,12 @@ class Failure implements Exception {
         text.contains('password') && text.contains('pdf')) {
       return FailureKind.pdfEncrypted;
     }
+    if (name == 'ModelException' ||
+        text.contains('model is not installed') ||
+        text.contains('model file not found') ||
+        text.contains('the translation model is not')) {
+      return FailureKind.modelMissing;
+    }
     if (name == 'FileSystemException' ||
         name == 'PathAccessException' ||
         name == 'PathNotFoundException') {
@@ -205,6 +214,7 @@ class Failure implements Exception {
         FailureKind.storage => 'err_storage',
         FailureKind.outOfMemory => 'err_memory',
         FailureKind.fontCoverage => 'err_font_coverage',
+        FailureKind.modelMissing => 'err_model_missing',
         FailureKind.cancelled => 'err_cancelled',
         FailureKind.unknown => 'err_unknown',
       };
@@ -238,12 +248,13 @@ class Failure implements Exception {
 
   static Failure document(FailureKind kind, {String? argument}) => Failure(
         kind,
-        messageKey: _keyFromKind(kind),
+        messageKey: keyFromKind(kind),
         argument: argument,
       );
 
-  static String _keyFromKind(FailureKind kind) => switch (kind) {
+  static String keyFromKind(FailureKind kind) => switch (kind) {
         FailureKind.missingKey => 'err_no_api_key',
+        FailureKind.modelMissing => 'err_model_missing',
         FailureKind.invalidKey => 'err_invalid_key',
         FailureKind.quota => 'err_quota',
         FailureKind.rateLimit => 'err_rate_limit',
@@ -264,6 +275,7 @@ class Failure implements Exception {
         FailureKind.storage => 'err_storage',
         FailureKind.outOfMemory => 'err_memory',
         FailureKind.fontCoverage => 'err_font_coverage',
+        FailureKind.modelMissing => 'err_model_missing',
         FailureKind.cancelled => 'err_cancelled',
         FailureKind.unknown => 'err_unknown',
       };

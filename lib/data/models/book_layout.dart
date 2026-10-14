@@ -21,6 +21,24 @@ class PageLayout {
 
   int get blockCount => blocks.length;
 
+  /// Returns the page with [extra] blocks appended (used by the OCR step to add
+  /// the words it found inside the page images).
+  PageLayout withExtraBlocks(List<TextBlock> extra) => PageLayout(
+        index: index,
+        width: width,
+        height: height,
+        rotation: rotation,
+        blocks: [...blocks, ...extra],
+      );
+
+  PageLayout copyWith({List<TextBlock>? blocks}) => PageLayout(
+        index: index,
+        width: width,
+        height: height,
+        rotation: rotation,
+        blocks: blocks ?? this.blocks,
+      );
+
   int get characterCount =>
       blocks.fold<int>(0, (sum, b) => sum + b.length);
 }
@@ -52,6 +70,16 @@ class BookLayout {
       pages.expand((p) => p.blocks).toList(growable: false);
 
   int get blockCount => pages.fold<int>(0, (s, p) => s + p.blockCount);
+
+  BookLayout copyWith({List<PageLayout>? pages}) => BookLayout(
+        sourcePath: sourcePath,
+        sourceName: sourceName,
+        pageCount: pageCount,
+        pages: pages ?? this.pages,
+        detectedLanguageCode: detectedLanguageCode,
+        detectedLanguageName: detectedLanguageName,
+        detectionConfidence: detectionConfidence,
+      );
 
   int get characterCount => pages.fold<int>(0, (s, p) => s + p.characterCount);
 

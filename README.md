@@ -5,10 +5,84 @@
 في نفس الإحداثيات ونفس المقاسات.
 
 > A cyberpunk PDF translation terminal: it reads the text layer of any PDF with
-> precise coordinates, translates **only the text** with Google Gemini, then
-> injects the translation back over the artwork of the *original* file.
+> precise coordinates, reads the words hidden inside page **images** with an
+> on-device OCR engine, translates **only the text** with **Meta NLLB-200
+> running locally through ONNX Runtime**, then injects the translation back
+> over the artwork of the *original* file.
+>
+> **No internet. No API key. No cloud.** The default engine never opens a
+> socket: the model, the tokenizer and the OCR all live on the phone.
 
 ---
+
+## ٠. العمل بدون إنترنت / 100% offline
+
+الترجمة تتم **داخل الجهاز** عبر نموذج **Meta NLLB-200 (Distilled 600M)** محوّل
+إلى ONNX، ويُشغَّل عبر `flutter_onnxruntime`. لا مفتاح، لا اتصال، ولا أي بيانات
+تخرج من الهاتف.
+
+```
+                      ┌──────────────────────── على الجهاز فقط ───────────────────────┐
+  نص الصفحة  ─►  SentencePiece  ─►  Encoder (مرة واحدة)  ─►  Hidden states
+                                                                  │
+                          [eos] + <رمز اللغة الهدف>  ─►  Decoder  ─►  الكلمة التالية ─┐
+                                        ▲                                             │
+                                        └──────── KV cache (past_key_values) ─────────┘
+
+  صورة الصفحة  ─►  تدرّج رمادي + Otsu  ─►  ملامح الأسطر  ─►  CRNN/CTC  ─►  نص داخل الصورة
+                                                                              │
+                                                              يُترجم ثم يُرسم فوق الصورة
+                                                              بهالة (halo) دون تغييرها
+```
+
+| الجزء | الملف | ملاحظة |
+|---|---|---|
+| جلسات ONNX، خيوط المعالجة، تنظيف الذاكرة | `onnx/onnx_backend.dart` | كل موتر وسيط يُحرَّر فوراً (`useArena: false`) |
+| اكتشاف أسماء الموترات وطبقات الـ KV | `onnx/onnx_backend.dart` → `Seq2SeqIo.discover` | يعمل مع merged cache أو cache لكل طبقة |
+| ترميز SentencePiece (BPE) | `onnx/sentencepiece.dart` | يقرأ `tokenizer.model` مباشرة بدون مكتبة إضافية |
+| لغات NLLB-200 (≈200) | `onnx/flores.dart` | الأسماء بالعربية والإنجليزية، اتجاه النص، ونظام الكتابة |
+| حلقة فك الترميز (greedy / beam) | `onnx/nllb_engine.dart` | KV cache + عدّاد مراجع للفرضيات + كشف التكرار |
+| كشف اللغة دون إنترنت | `onnx/offline_language_identifier.dart` | نظام الكتابة + كلمات الوظيفة |
+| عميل الترجمة (ذكاء التقسيم) | `onnx/nllb_translation_client.dart` | تقسيم جُملي، تسلسل، مهلة تبريد اختيارية |
+| OCR محلي | `onnx/ocr/onnx_ocr.dart` | Otsu + إسقاط الحبر + CTC، بلا أي خدمة خارجية |
+| ربط الـ OCR بالصفحات | `onnx/ocr/pdf_image_ocr.dart` | يrender المنطقة فقط (~200 dpi) ويحوّلها لإحداثيات PDF |
+| دمج النص المستخرج في خريطة الكتاب | `onnx/ocr/ocr_augmentation.dart` | المناطق تصبح بلوكات عادية بمعرفات `ocr-p{page}-i{n}` |
+| إدارة ملفات النماذج | `onnx/model_manager.dart` | فحص، استيراد، تحقّق، تحميل |
+
+### تثبيت النماذج
+
+النماذج بمئات الميجابايت، لذلك **ليست** ضمن المستودع ولا ضمن APK. مرة واحدة فقط:
+
+1. حمّل نسخة ONNX من `facebook/nllb-200-distilled-600M` (ال encoder وال decoder)
+   وملف `tokenizer.model`، و(اختيارياً) نموذج تعرّف نصوص ONNX وملف الأبجدية.
+2. انسخها إلى `ShadowLanguages/models` على الذاكرة الخارجية، أو استخدم
+   زر **استيراد ملف نموذج** داخل `System Config ▸ النماذج المحلية`.
+3. الأسماء المقبولة:
+
+| الملف | الأسماء المقبولة |
+|---|---|
+| المُرمِّز | `nllb-encoder.onnx` · `encoder_model.onnx` |
+| فاكّ الترميز | `nllb-decoder.onnx` · `decoder_model.onnx` |
+| المُقطِّع | `tokenizer.model` · `sentencepiece.model` |
+| OCR | `ocr-rec.onnx` · `rec.onnx` |
+| الأبجدية | `ocr_charset.txt` · `charset.txt` |
+
+بدون نموذج الـ OCR يعمل التطبيق بشكل طبيعي وتُترك نصوص الصور كما هي. وبدون نموذج
+الترجمة يعرض التطبيق رسالة واضحة `err_model_missing` بدل الانهيار.
+
+### الذاكرة والحرارة
+
+* التقسيم جُملي: فقرة طويلة تُقسَّم قبل الترميز، فلا تُبنى مصفوفة انتباه ضخمة.
+* الاستدلال **تسلسلي**: تشغيل Decoderَين معاً يضاعف الذاكرة بلا فائدة تُذكر.
+* كل موتر وسيط يُحرَّر بعد قراءته مباشرة (`OrtValue.dispose`).
+* من الإعدادات: عدد الأنوية (1–4)، دقة فك الترميز (1 = الأسرع، 4 = الأفضل)،
+  ومهلة تبريد بين الفقرات للكتب الطويلة.
+
+### المحرك السحابي (اختياري)
+
+`GeminiClient` ما زال موجوداً خلف نفس الواجهة `TranslationClient`، لكنه **معطّل
+افتراضياً**. من يفعّله في الإعدادات يحتاج مفتاح API واتصالاً — أما الوضع
+الافتراضي فلا يحتاج شيئاً.
 
 ## ١. الفكرة / How it works
 
@@ -28,9 +102,11 @@
 1. **Parsing & Bounding boxes** — `PdfLayoutExtractor` (pdfrx / PDFium) collects
    every character with its rect, builds blocks/lines, and `BackgroundSampler`
    samples the page background and ink colours from a rendered pixmap.
-2. **Content-targeted translation** — only extracted strings go to Gemini
+2. **Content-targeted translation** — only extracted strings go to the engine
    (`TranslationPipeline`), batched, each item carrying its stable reference id,
-   plus a growing glossary so terminology stays consistent across the book.
+   plus a growing glossary so terminology stays consistent across the book. The
+   default engine is **NLLB-200 on the device**; the optional cloud engine is
+   one setting away.
 3. **Text replacement & injection** — the custom engine in
    `lib/services/pdf/inject/` appends a new content stream to the **original**
    PDF (incremental update): a cover rectangle in the sampled background colour,
@@ -44,7 +120,7 @@
 |---|---|
 | **The Cyber Terminal Hub** | منطقة رفع بحدود نيون، اسم الملف وحجمه الحقيقي، قائمة لغات العالم، سطر الكشف التلقائي `[System]: Source language detected successfully: [English - 99.9%]`, تدفق سجل أحادي المسافة، وشريط تقدم نيون متحرك. |
 | **The Shadow Reader** | قارئ PDF داكن مريح للعين، **Dual View** للمقارنة مع الأصل، بحث فوري داخل الكتاب، وتصدير باسم `shadow_translated_[book_name].pdf`. |
-| **System Config** | مفتاح Gemini (محفوظ في Keystore ولا يُخزن في النسخ الاحتياطية)، اختبار اتصال، الموديل، الحرارة، التوازي، خيارات محرك PDF، لون النيون، لغة الواجهة، إدارة المكتبة والذاكرة المؤقتة. |
+| **System Config** | اختيار المحرك (داخل الجهاز ← افتراضي، أو سحابي اختياري)، حالة ملفات النماذج واستيرادها، تفعيل الـ OCR، عدد الأنوية ودقة فك الترميز ومهلة التبريد، مفتاح Gemini (محفوظ في Keystore، اختياري)، الموديل، الحرارة، التوازي، خيارات محرك PDF، لون النيون، لغة الواجهة، إدارة المكتبة والذاكرة المؤقتة. |
 
 ## ٣. التشغيل / Getting started
 
@@ -181,7 +257,10 @@ tool/
 وعدد الصفحات المنجزة. انقطاع الكهرباء في الصفحة ٤٠ من ٥٠ يكلّف صفحة واحدة،
 وزر **RESUME** يكمل من حيث توقّف دون إعادة ترجمة ما أُنجز (وبلا استهلاك رموز).
 
-## ٩. حدود الـ API / Rate & token limits
+## ٩. حدود الـ API والتقسيم الذكي / Rate limits & smart chunking
+
+**(هذه الحدود تخص المحرك السحابي الاختياري فقط. المحرك المحلي لا يملك حدوداً
+سوى ذاكرة الجهاز وحرارته — انظر القسم ٠.)**
 
 * **تنظيم الطلبات** — `RateLimiter` يفرض فاصلاً زمنياً أدنى بين الطلبات، ويضاعفه
   تصاعدياً عند الفشل حتى ٢٠ ثانية، ويُريحه عند النجاح.

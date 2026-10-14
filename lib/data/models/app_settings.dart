@@ -20,6 +20,13 @@ class AppSettings {
     this.maxCharactersPerRequest = 1800,
     this.readerTheme = 'night',
     this.onboardingDone = false,
+    // Offline first: the app ships with the on-device NLLB-200 engine and
+    // needs nothing but the model files to work forever, with no network.
+    this.useOfflineEngine = true,
+    this.enableOcr = true,
+    this.inferenceThreads = 2,
+    this.beamSize = 1,
+    this.pauseBetweenBlocksMs = 0,
   });
 
   /// Never serialised — lives in the Android Keystore only.
@@ -38,6 +45,23 @@ class AppSettings {
   final int maxCharactersPerRequest;
   final String readerTheme;
   final bool onboardingDone;
+
+  /// `true` = translate with NLLB-200 on the phone (no internet at all).
+  /// `false` = the optional cloud engine, for users who prefer it.
+  final bool useOfflineEngine;
+
+  /// Read the words that live inside page images with the offline OCR engine.
+  final bool enableOcr;
+
+  /// CPU threads handed to ONNX Runtime. Two is the sweet spot on a phone:
+  /// more threads mostly buy heat, not speed.
+  final int inferenceThreads;
+
+  /// 1 = greedy decoding, 2–4 = beam search (better, slower, more memory).
+  final int beamSize;
+
+  /// Cool-down between two blocks, for long books on weak phones.
+  final int pauseBetweenBlocksMs;
 
   bool get hasApiKey => apiKey.trim().isNotEmpty;
 
@@ -63,6 +87,11 @@ class AppSettings {
     int? maxCharactersPerRequest,
     String? readerTheme,
     bool? onboardingDone,
+    bool? useOfflineEngine,
+    bool? enableOcr,
+    int? inferenceThreads,
+    int? beamSize,
+    int? pauseBetweenBlocksMs,
   }) =>
       AppSettings(
         apiKey: apiKey ?? this.apiKey,
@@ -81,6 +110,12 @@ class AppSettings {
             maxCharactersPerRequest ?? this.maxCharactersPerRequest,
         readerTheme: readerTheme ?? this.readerTheme,
         onboardingDone: onboardingDone ?? this.onboardingDone,
+        useOfflineEngine: useOfflineEngine ?? this.useOfflineEngine,
+        enableOcr: enableOcr ?? this.enableOcr,
+        inferenceThreads: inferenceThreads ?? this.inferenceThreads,
+        beamSize: beamSize ?? this.beamSize,
+        pauseBetweenBlocksMs:
+            pauseBetweenBlocksMs ?? this.pauseBetweenBlocksMs,
       );
 
   /// Builds the [TranslationOptions] handed to the pipeline.
@@ -118,6 +153,11 @@ class AppSettings {
         'maxCharactersPerRequest': maxCharactersPerRequest,
         'readerTheme': readerTheme,
         'onboardingDone': onboardingDone,
+        'useOfflineEngine': useOfflineEngine,
+        'enableOcr': enableOcr,
+        'inferenceThreads': inferenceThreads,
+        'beamSize': beamSize,
+        'pauseBetweenBlocksMs': pauseBetweenBlocksMs,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json, {String apiKey = ''}) =>
@@ -138,5 +178,11 @@ class AppSettings {
             (json['maxCharactersPerRequest'] as num?)?.toInt() ?? 1800,
         readerTheme: '${json['readerTheme'] ?? 'night'}',
         onboardingDone: json['onboardingDone'] as bool? ?? false,
+        useOfflineEngine: json['useOfflineEngine'] as bool? ?? true,
+        enableOcr: json['enableOcr'] as bool? ?? true,
+        inferenceThreads: (json['inferenceThreads'] as num?)?.toInt() ?? 2,
+        beamSize: (json['beamSize'] as num?)?.toInt() ?? 1,
+        pauseBetweenBlocksMs:
+            (json['pauseBetweenBlocksMs'] as num?)?.toInt() ?? 0,
       );
 }

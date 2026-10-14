@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../../core/logging/log_entry.dart';
 import '../../core/utils/job_cancellation.dart';
@@ -6,7 +7,9 @@ import '../../data/models/book_layout.dart';
 import '../../data/models/job_checkpoint.dart';
 import '../../data/models/text_block.dart';
 import 'gemini_client.dart';
+import 'onnx/ocr/ocr_augmentation.dart';
 import 'rate_limiter.dart';
+import 'translation_client.dart';
 import 'translation_options.dart';
 
 /// Terminology memory: keeps the translation of repeated names stable across
@@ -78,20 +81,52 @@ class PipelineProgress {
 
 enum PipelinePhase { extracting, detecting, translating, done }
 
+/// Resolves the engine the first time it is needed.
+///
+/// Loading NLLB-200 means opening two ONNX sessions and parsing a 4 MB
+/// vocabulary: that must happen **once**, lazily, and never while the UI is
+/// building a provider.
+typedef ClientLoader = Future<TranslationClient> Function();
+
 /// Orchestrates detection + batched translation of a whole book.
 class TranslationPipeline {
   TranslationPipeline({
-    required GeminiClient client,
+    required ClientLoader client,
     required LogBus log,
     RateLimiter? limiter,
     SmartChunker? chunker,
-  })  : _client = client,
+    OcrAugmenter? ocrAugmenter,
+  })  : _loadClient = client,
         _log = log,
         _limiter = limiter ?? RateLimiter(),
-        _chunker = chunker ?? const SmartChunker();
+        _chunker = chunker ?? const SmartChunker() {
+    _ocr = ocrAugmenter;
+  }
 
-  final GeminiClient _client;
+  final ClientLoader _loadClient;
   final LogBus _log;
+
+  TranslationClient? _client;
+
+  /// The engine, loaded on first use and cached for the whole job.
+  Future<TranslationClient> _engine() async => _client ??= await _loadClient();
+
+  /// True once the engine is up and it never touches the network.
+  Future<bool> isOffline() async => (await _engine()).isOffline;
+
+  /// Releases the cached engine (used when the app switches engines).
+  void resetEngine() => _client = null;
+
+  /// Optional offline OCR pass: adds the words found inside page images to the
+  /// book map so they get translated too.
+  ///
+  /// Set by the composition root once the OCR model has been loaded, which is
+  /// asynchronous — the pipeline itself stays synchronous to build.
+  OcrAugmenter? _ocr;
+
+  OcrAugmenter? get ocrAugmenter => _ocr;
+
+  set ocrAugmenter(OcrAugmenter? value) => _ocr = value;
 
   /// Keeps the request rate inside the API limits.
   final RateLimiter _limiter;
@@ -110,14 +145,56 @@ class TranslationPipeline {
     }
   }
 
+  /// Runs the offline OCR pass over the page images.
+  ///
+  /// Returns the original layout untouched when no OCR model is installed, so
+  /// the job simply continues instead of failing.
+  Future<OcrAugmentation> readImagesInPages({
+    required Uint8List sourceBytes,
+    required BookLayout layout,
+    String? password,
+    JobCancellation? cancellation,
+    void Function(int pageIndex, int pageCount)? onProgress,
+  }) async {
+    if (_ocr == null) {
+      return OcrAugmentation(
+        layout: layout,
+        pagesScanned: 0,
+        blocksFound: 0,
+        skipped: true,
+        note: 'OCR not enabled',
+      );
+    }
+    _log.info('Scanning page images for hidden text (offline OCR)…');
+    final result = await _ocr!.augment(
+      sourceBytes: sourceBytes,
+      layout: layout,
+      password: password,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
+    if (result.skipped) {
+      _log.warning('OCR found nothing (${result.note ?? 'skipped'})');
+    } else if (result.isEmpty) {
+      _log.info('OCR: no text inside the images of this document');
+    } else {
+      _log.success('OCR: ${result.blocksFound} text region(s) recovered from '
+          'images on ${result.pagesScanned} page(s) — they will be translated '
+          'and drawn over the picture');
+    }
+    return result;
+  }
+
   /// Detects the source language from the most representative sample.
   Future<LanguageDetection> detectLanguage(BookLayout layout) async {
     final sample = _sampleText(layout, 1200);
     if (sample.trim().isEmpty) {
       return const LanguageDetection(code: 'und', name: 'Unknown', confidence: 0);
     }
-    _log.info('Probing source language from ${sample.length} sampled characters…');
-    final detection = await _client.detectLanguage(sample);
+    final client = await _engine();
+    _log.info('Probing source language from ${sample.length} sampled characters '
+        'on ${client.displayName}…');
+    final detection = await client.detectLanguage(sample);
     _log.success(
       'Source language detected successfully: [${detection.name} - '
       '${detection.confidence.toStringAsFixed(1)}%]',
@@ -144,6 +221,7 @@ class TranslationPipeline {
         onPageCompleted,
     int? maxPages,
   }) async {
+    final client = await _engine();
     final translations = <String, String>{};
     final totalBlocks = layout.blockCount;
     var processedBlocks = 0;
@@ -194,7 +272,7 @@ class TranslationPipeline {
       }
 
       _log.info('Translating page ${page.index + 1} to '
-          '${options.targetLanguageName} via Neural Core…');
+          '${options.targetLanguageName} via ${client.displayName}…');
 
       // A single monster paragraph must never blow the request up: split it
       // into sentence sized pieces and stitch the answer back together.
@@ -208,7 +286,7 @@ class TranslationPipeline {
           cancellation?.throwIfCancelled();
           await _limiter.acquire();
           try {
-            final translated = await _client.translateBatch(
+            final translated = await client.translateBatch(
               blocks: batch,
               options: options,
               context: context,

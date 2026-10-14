@@ -308,8 +308,10 @@ class _Line {
         case PdfTextDirection.rtl:
         case PdfTextDirection.vrtl:
           rtl++;
+          break;
         case PdfTextDirection.ltr:
           ltr++;
+          break;
         case PdfTextDirection.unknown:
           break;
       }

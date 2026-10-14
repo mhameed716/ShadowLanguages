@@ -51,7 +51,7 @@ class LanguageSelector extends ConsumerWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    selected.displayName,
+                    selected.nameFor(t.languageCode),
                     style: theme.titleSmall?.copyWith(fontSize: 14),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -161,14 +161,14 @@ class _LanguageSheetState extends ConsumerState<_LanguageSheet> {
                     leading: SizedBox(
                       width: 38,
                       child: Text(
-                        language.code.toUpperCase(),
+                        language.code.split('_').first.toUpperCase(),
                         style: theme.labelSmall?.copyWith(
                           color: isSelected ? widget.accent : AppColors.textDisabled,
                         ),
                       ),
                     ),
                     title: Text(
-                      language.name,
+                      language.nameFor(t.languageCode),
                       style: theme.bodyMedium?.copyWith(
                         color: isSelected ? widget.accent : AppColors.textPrimary,
                       ),

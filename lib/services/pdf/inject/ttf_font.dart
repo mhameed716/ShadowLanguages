@@ -102,6 +102,7 @@ class TtfFont {
           final g = data[offset + 6 + c];
           if (g != 0) map[c] = g;
         }
+        break;
       case 4:
         final segCountX2 = bd.getUint16(offset + 6);
         final segCount = segCountX2 ~/ 2;
@@ -127,12 +128,14 @@ class TtfFont {
             }
           }
         }
+        break;
       case 6:
         final first = bd.getUint16(offset + 6);
         final count = bd.getUint16(offset + 8);
         for (var i = 0; i < count; i++) {
           map[first + i] = bd.getUint16(offset + 10 + i * 2);
         }
+        break;
       case 12:
         final nGroups = bd.getUint32(offset + 12);
         for (var i = 0; i < nGroups; i++) {
@@ -146,6 +149,7 @@ class TtfFont {
             map[c] = startGid + (c - start);
           }
         }
+        break;
       default:
         throw TtfException('unsupported cmap format $format');
     }

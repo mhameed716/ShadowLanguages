@@ -44,7 +44,10 @@ class ShadowLanguagesApp extends ConsumerWidget {
       },
       home: settingsAsync.when(
         data: (settings) {
-          if (settings.onboardingDone && settings.hasApiKey) {
+          // The on-device engine works with no key: only the optional cloud
+          // engine has to wait for one.
+          if (settings.onboardingDone &&
+              (settings.useOfflineEngine || settings.hasApiKey)) {
             return const AppShell();
           }
           return OnboardingScreen(accent: accentTheme.primary);

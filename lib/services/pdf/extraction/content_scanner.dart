@@ -318,23 +318,28 @@ class _ScanState {
       switch (text) {
         case 'q':
           _stack.add(baseMatrix);
+          break;
         case 'Q':
           if (_stack.isNotEmpty) baseMatrix = _stack.removeLast();
+          break;
         case 'cm':
           if (numbers.length >= 6) {
             final n = numbers.sublist(numbers.length - 6);
             baseMatrix = baseMatrix
                 .multiply(_Matrix(n[0], n[1], n[2], n[3], n[4], n[5]));
           }
+          break;
         case 'Do':
           final target = name;
           if (target != null) _drawXObject(target, onForm: onForm);
+          break;
         case 're':
           if (numbers.length >= 4) {
             final n = numbers.sublist(numbers.length - 4);
             final box = _transformRect(n[0], n[1], n[2], n[3]);
             if (!box.isEmpty) vectors.add(box);
           }
+          break;
         case 'm':
         case 'l':
           if (numbers.length >= 2) {
@@ -342,12 +347,15 @@ class _ScanState {
             final p = baseMatrix.transform(n[0], n[1]);
             vectors.add(PdfBox(p.$1, p.$2, 0.6, 0.6));
           }
+          break;
         case 'BI':
           // Inline image: record the current placement and jump to `EI`.
           images.add(_transformRect(0, 0, 1, 1));
           _skipInlineImage(lexer);
+          break;
         case 'sh':
           shadings.add(_transformRect(0, 0, 1, 1));
+          break;
         default:
           break; // text, colour, clipping, curves… irrelevant here
       }

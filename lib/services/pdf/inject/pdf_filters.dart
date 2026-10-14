@@ -113,15 +113,18 @@ abstract final class PdfFilters {
           for (var i = bpp; i < rowLen; i++) {
             row[i] = (row[i] + row[i - bpp]) & 0xFF;
           }
+          break;
         case 2:
           for (var i = 0; i < rowLen; i++) {
             row[i] = (row[i] + prev[i]) & 0xFF;
           }
+          break;
         case 3:
           for (var i = 0; i < rowLen; i++) {
             final left = i >= bpp ? row[i - bpp] : 0;
             row[i] = (row[i] + ((left + prev[i]) >> 1)) & 0xFF;
           }
+          break;
         case 4:
           for (var i = 0; i < rowLen; i++) {
             final a = i >= bpp ? row[i - bpp] : 0;
@@ -141,6 +144,7 @@ abstract final class PdfFilters {
             }
             row[i] = (row[i] + pr) & 0xFF;
           }
+          break;
         default:
           break;
       }

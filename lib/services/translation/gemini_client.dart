@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 
 import '../../core/utils/job_cancellation.dart';
 import '../../data/models/text_block.dart';
+import 'translation_client.dart';
 import 'translation_options.dart';
 
 /// What went wrong, in a shape the UI can translate into a message.
@@ -85,7 +86,7 @@ class TokenUsage {
 ///
 /// Deliberately hand written instead of wrapping a SDK: we need JSON schema
 /// constrained output, per-request cancellation and precise error taxonomy.
-class GeminiClient {
+class GeminiClient implements TranslationClient {
   GeminiClient({
     required String apiKey,
     required this.model,
@@ -104,6 +105,12 @@ class GeminiClient {
 
   static const String baseUrl =
       'https://generativelanguage.googleapis.com/v1beta/models';
+
+  @override
+  bool get isOffline => false;
+
+  @override
+  String get displayName => 'Gemini $model (cloud)';
 
   String _apiKey;
   final String model;

@@ -9,7 +9,14 @@ import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/pdf/pdf_engine.dart';
 import '../../services/translation/gemini_client.dart';
+import '../../services/translation/onnx/model_manager.dart';
+import '../../services/translation/onnx/nllb_translation_client.dart';
+import '../../services/translation/onnx/offline_language_identifier.dart';
+import '../../services/translation/onnx/ocr/ocr_augmentation.dart';
+import '../../services/translation/onnx/ocr/ocr_types.dart';
+import '../../services/translation/onnx/ocr/pdf_image_ocr.dart';
 import '../../services/translation/rate_limiter.dart';
+import '../../services/translation/translation_client.dart';
 import '../../services/translation/translation_pipeline.dart';
 import '../localization/strings.dart';
 import '../logging/log_entry.dart';
@@ -55,17 +62,101 @@ final geminiClientProvider = Provider<GeminiClient>((ref) {
   );
 });
 
+// ------------------------------------------------------- on-device inference
+/// Owns the ONNX sessions: NLLB-200 plus the OCR recognizer.
+final modelManagerProvider = Provider<ModelManager>((ref) {
+  final settings = ref.watch(settingsProvider).valueOrNull ?? const AppSettings();
+  final threads = settings.inferenceThreads.clamp(1, 4);
+  final manager = ModelManager(
+    log: ref.watch(logBusProvider),
+    threads: threads,
+  );
+  ref.onDispose(manager.dispose);
+  return manager;
+});
+
+/// Which model files are present right now.
+final modelInventoryProvider = FutureProvider<ModelInventory>((ref) async {
+  return ref.watch(modelManagerProvider).scan();
+});
+
+/// The offline OCR engine (a no-op one when the model is not installed).
+final ocrEngineProvider = FutureProvider<OcrEngine>((ref) async {
+  return ref.watch(modelManagerProvider).createOcrEngine();
+});
+
+final ocrExtractorProvider = FutureProvider<PdfImageOcrExtractor?>((ref) async {
+  final settings = ref.watch(settingsProvider).valueOrNull ?? const AppSettings();
+  if (!settings.enableOcr) return null;
+  final engine = await ref.watch(ocrEngineProvider.future);
+  if (!engine.isAvailable) return null;
+  return PdfImageOcrExtractor(engine: engine, log: ref.watch(logBusProvider));
+});
+
+/// Resolves the engine: on-device NLLB-200 by default, cloud only if the user
+/// explicitly switches it on **and** has a key.
+final translationClientProvider = FutureProvider<TranslationClient>((ref) async {
+  final settings = ref.watch(settingsProvider).valueOrNull ?? const AppSettings();
+  final log = ref.watch(logBusProvider);
+
+  if (settings.useOfflineEngine) {
+    final manager = ref.watch(modelManagerProvider);
+    final engine = await manager.createEngine(
+      beamSize: settings.beamSize.clamp(1, 4),
+      maxInputTokens: (settings.maxCharactersPerRequest ~/ 4).clamp(64, 448),
+    );
+    return NllbTranslationClient(
+      engine: engine,
+      identifier: OfflineLanguageIdentifier(
+        uiLanguageCode: settings.interfaceLanguageCode,
+      ),
+      log: log,
+      pauseBetweenBlocks:
+          Duration(milliseconds: settings.pauseBetweenBlocksMs.clamp(0, 2000)),
+    );
+  }
+
+  if (!settings.hasApiKey) {
+    throw const TranslationException(
+      TranslationErrorKind.missingKey,
+      'the cloud engine is switched on but no API key is configured',
+    );
+  }
+  return ref.watch(geminiClientProvider);
+});
+
 /// One limiter for the whole app: every worker of every job shares it, so a
 /// big book can not flood the API.
 final rateLimiterProvider = Provider<RateLimiter>((ref) => RateLimiter());
 
 final translationPipelineProvider = Provider<TranslationPipeline>((ref) {
-  return TranslationPipeline(
-    client: ref.watch(geminiClientProvider),
+  final pipeline = TranslationPipeline(
+    client: () async {
+      final client = await ref.read(translationClientProvider.future);
+      await _attachOcr(ref, pipeline);
+      return client;
+    },
     log: ref.watch(logBusProvider),
     limiter: ref.watch(rateLimiterProvider),
   );
+  return pipeline;
 });
+
+/// Hooks the offline OCR pass onto the pipeline once the engine is known.
+///
+/// The OCR engine is only useful together with an on-device translator: sending
+/// pixels to a cloud API would break the “nothing leaves the phone” promise.
+Future<void> _attachOcr(Ref ref, TranslationPipeline pipeline) async {
+  final settings = ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+  if (!settings.enableOcr) return;
+  final extractor = await ref.read(ocrExtractorProvider.future);
+  if (extractor == null) return;
+  final augmenter = OcrAugmenter(
+    extractor: extractor,
+    onLog: ref.read(logBusProvider).info,
+  );
+  pipeline.ocrAugmenter = augmenter;
+}
 
 // -------------------------------------------------------------- localisation
 final stringsProvider = Provider<Strings>((ref) {
@@ -128,6 +219,21 @@ class SettingsController extends AsyncNotifier<AppSettings> {
 
   Future<void> setConcurrency(int value) =>
       update((s) => s.copyWith(concurrency: value));
+
+  // ------------------------------------------------------- offline engine
+  Future<void> setOfflineEngine(bool value) =>
+      update((s) => s.copyWith(useOfflineEngine: value));
+
+  Future<void> setOcr(bool value) => update((s) => s.copyWith(enableOcr: value));
+
+  Future<void> setInferenceThreads(int value) =>
+      update((s) => s.copyWith(inferenceThreads: value.clamp(1, 4)));
+
+  Future<void> setBeamSize(int value) =>
+      update((s) => s.copyWith(beamSize: value.clamp(1, 4)));
+
+  Future<void> setBlockPause(int milliseconds) => update(
+      (s) => s.copyWith(pauseBetweenBlocksMs: milliseconds.clamp(0, 2000)));
 
   Future<void> setMaxCharacters(int value) =>
       update((s) => s.copyWith(maxCharactersPerRequest: value));

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,6 +10,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/utils/formatters.dart';
 import '../../services/translation/gemini_client.dart';
+import '../../services/translation/onnx/model_manager.dart';
 import '../../services/translation/translation_options.dart';
 import '../terminal/terminal_controller.dart';
 
@@ -57,6 +59,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ],
         ),
         const SizedBox(height: 16),
+
+        // -------------------------------------------------- on-device engine
+        _OfflineSection(accent: accent),
+        const SizedBox(height: 14),
 
         // ------------------------------------------------------------ API key
         CyberSection(
@@ -582,6 +588,437 @@ class _LibraryList extends ConsumerWidget {
               },
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// The on-device engine panel: engine choice, model files, OCR and tuning.
+///
+/// Models are hundreds of megabytes, so they are never bundled: this is where
+/// the user imports them once and the app then works forever without a network.
+class _OfflineSection extends ConsumerStatefulWidget {
+  const _OfflineSection({required this.accent});
+
+  final Color accent;
+
+  @override
+  ConsumerState<_OfflineSection> createState() => _OfflineSectionState();
+}
+
+class _OfflineSectionState extends ConsumerState<_OfflineSection> {
+  bool _importing = false;
+  double _progress = 0;
+  String? _note;
+
+  Future<void> _import() async {
+    final t = ref.read(stringsProvider);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+        withData: false,
+      );
+      final path = result?.files.single.path;
+      if (path == null) return;
+      setState(() {
+        _importing = true;
+        _progress = 0;
+        _note = null;
+      });
+      final status = await ref.read(modelManagerProvider).importFile(
+        path,
+        onProgress: (copied, total) {
+          if (!mounted) return;
+          setState(() => _progress = total == 0 ? 0 : copied / total);
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _note = t('models_imported', {'n': status.spec.labelEnglish});
+      });
+      ref.invalidate(modelInventoryProvider);
+      ref.invalidate(translationClientProvider);
+      ref.invalidate(ocrEngineProvider);
+      ref.invalidate(ocrExtractorProvider);
+      ref.read(translationPipelineProvider).resetEngine();
+    } on ModelException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _note = e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _note = '${t('models_import_failed')}: $e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ref.watch(stringsProvider);
+    final settings = ref.watch(settingsProvider).valueOrNull;
+    final controller = ref.read(settingsProvider.notifier);
+    final inventory = ref.watch(modelInventoryProvider);
+    final offline = settings?.useOfflineEngine ?? true;
+    final theme = AppTypography.buildTextTheme();
+
+    return CyberSection(
+      title: t('models_title'),
+      accent: widget.accent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            t('models_body'),
+            style: theme.bodySmall?.copyWith(fontSize: 11.5),
+          ),
+          const SizedBox(height: 12),
+
+          // ------------------------------------------------ engine selection
+          _EngineChoice(
+            accent: widget.accent,
+            offline: offline,
+            onChanged: (value) {
+              controller.setOfflineEngine(value);
+              ref.invalidate(translationClientProvider);
+              // The pipeline caches the engine it resolved: drop it so the next
+              // job really runs on the newly selected one.
+              ref.read(translationPipelineProvider).resetEngine();
+            },
+          ),
+          const SizedBox(height: 14),
+
+          // ------------------------------------------------------ model list
+          inventory.when(
+            loading: () => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(t('models_scanning'), style: theme.bodySmall),
+            ),
+            error: (error, _) => Text(
+              '$error',
+              style: theme.bodySmall?.copyWith(color: AppColors.danger),
+            ),
+            data: (models) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final status in models.items)
+                  _ModelRow(
+                    status: status,
+                    accent: widget.accent,
+                    onDelete: status.present
+                        ? () async {
+                            await ref
+                                .read(modelManagerProvider)
+                                .delete(status.kind);
+                            ref.invalidate(modelInventoryProvider);
+                          }
+                        : null,
+                  ),
+                const SizedBox(height: 8),
+                Text(
+                  t('models_total', {'s': _size(models.totalBytes)}),
+                  style: theme.labelSmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          if (_importing) ...[
+            LinearProgressIndicator(
+              value: _progress == 0 ? null : _progress,
+              color: widget.accent,
+            ),
+            const SizedBox(height: 6),
+          ],
+          if (_note != null) ...[
+            Text(
+              _note!,
+              style: theme.bodySmall?.copyWith(
+                fontSize: 11,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+
+          OutlinedButton.icon(
+            onPressed: _importing ? null : _import,
+            icon: const Icon(Icons.file_download, size: 16),
+            label: Text(t('models_import')),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            t('models_help'),
+            style: theme.bodySmall?.copyWith(fontSize: 11),
+          ),
+
+          const SizedBox(height: 14),
+
+          // ------------------------------------------------------------- OCR
+          _SwitchTile(
+            label: t('ocr_title'),
+            hint: t('ocr_body'),
+            value: settings?.enableOcr ?? true,
+            accent: widget.accent,
+            onChanged: (value) {
+              controller.setOcr(value);
+              ref.invalidate(ocrExtractorProvider);
+            },
+          ),
+
+          // ------------------------------------------------------- tuning
+          _SliderRow(
+            label: t('perf_threads'),
+            value: (settings?.inferenceThreads ?? 2).toDouble(),
+            min: 1,
+            max: 4,
+            divisions: 3,
+            display: '${settings?.inferenceThreads ?? 2}',
+            onChanged: (value) => controller.setInferenceThreads(value.round()),
+          ),
+          _SliderRow(
+            label: t('perf_beam'),
+            value: (settings?.beamSize ?? 1).toDouble(),
+            min: 1,
+            max: 4,
+            divisions: 3,
+            display: '${settings?.beamSize ?? 1}',
+            onChanged: (value) => controller.setBeamSize(value.round()),
+          ),
+          _SliderRow(
+            label: t('perf_pause'),
+            value: (settings?.pauseBetweenBlocksMs ?? 0).toDouble(),
+            min: 0,
+            max: 500,
+            divisions: 10,
+            display: '${settings?.pauseBetweenBlocksMs ?? 0} ms',
+            onChanged: (value) => controller.setBlockPause(value.round()),
+          ),
+          Text(
+            t('perf_pause_hint'),
+            style: theme.bodySmall?.copyWith(fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _size(int bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+    }
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    if (bytes == 0) return '—';
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+}
+
+/// Offline (on-device) vs cloud.
+class _EngineChoice extends ConsumerWidget {
+  const _EngineChoice({
+    required this.accent,
+    required this.offline,
+    required this.onChanged,
+  });
+
+  final Color accent;
+  final bool offline;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    return Row(
+      children: [
+        Expanded(
+          child: _EngineCard(
+            accent: accent,
+            selected: offline,
+            icon: Icons.memory,
+            title: t('engine_offline'),
+            hint: t('engine_offline_hint'),
+            onTap: () => onChanged(true),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _EngineCard(
+            accent: accent,
+            selected: !offline,
+            icon: Icons.cloud_outlined,
+            title: t('engine_cloud'),
+            hint: t('engine_cloud_hint'),
+            onTap: () => onChanged(false),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EngineCard extends StatelessWidget {
+  const _EngineCard({
+    required this.accent,
+    required this.selected,
+    required this.icon,
+    required this.title,
+    required this.hint,
+    required this.onTap,
+  });
+
+  final Color accent;
+  final bool selected;
+  final IconData icon;
+  final String title;
+  final String hint;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = AppTypography.buildTextTheme();
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? accent : accent.withValues(alpha: 0.15),
+            width: selected ? 1.6 : 1,
+          ),
+          color: selected ? accent.withValues(alpha: 0.08) : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: selected ? accent : AppColors.textSecondary, size: 18),
+            const SizedBox(height: 6),
+            Text(
+              title,
+              style: theme.bodyMedium?.copyWith(
+                color: selected ? accent : AppColors.textPrimary,
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              hint,
+              style: theme.bodySmall?.copyWith(fontSize: 10.5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One line of the model inventory.
+class _ModelRow extends ConsumerWidget {
+  const _ModelRow({
+    required this.status,
+    required this.accent,
+    this.onDelete,
+  });
+
+  final ModelStatus status;
+  final Color accent;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    final theme = AppTypography.buildTextTheme();
+    final color = status.present ? AppColors.success : AppColors.danger;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(
+            status.present ? Icons.check_circle_outline : Icons.error_outline,
+            size: 16,
+            color: color,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(status.spec.labelArabic, style: theme.bodySmall),
+                Text(
+                  status.present
+                      ? '${t('models_ready')} · ${_size(status.sizeBytes)}'
+                      : (status.note ?? t('models_missing')),
+                  style: theme.labelSmall?.copyWith(color: color, fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+          if (onDelete != null)
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 16),
+              color: AppColors.textSecondary,
+              tooltip: t('models_delete'),
+              onPressed: onDelete,
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _size(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+}
+
+/// Label + slider + value, the shape used all over the config screen.
+class _SliderRow extends StatelessWidget {
+  const _SliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.display,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final String display;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = AppTypography.buildTextTheme();
+    return Row(
+      children: [
+        SizedBox(width: 96, child: Text(label, style: theme.bodySmall)),
+        Expanded(
+          child: Slider(
+            value: value.clamp(min, max),
+            min: min,
+            max: max,
+            divisions: divisions,
+            label: display,
+            onChanged: onChanged,
+          ),
+        ),
+        Text(display, style: theme.labelSmall),
       ],
     );
   }

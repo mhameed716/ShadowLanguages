@@ -156,10 +156,13 @@ class BlockLayoutEngine {
       switch (request.align) {
         case PdfTextAlign.left:
           left = box.left;
+          break;
         case PdfTextAlign.right:
           left = box.right - width;
+          break;
         case PdfTextAlign.center:
           left = box.left + (box.width - width) / 2;
+          break;
         case PdfTextAlign.justify:
           left = box.left;
       }

@@ -1,4 +1,5 @@
 import '../pdf/shaping/bidi.dart';
+import 'onnx/flores.dart';
 
 /// A language the user can translate into.
 class AppLanguageOption {
@@ -7,6 +8,7 @@ class AppLanguageOption {
     required this.name,
     required this.nativeName,
     this.rtl = false,
+    this.nameArabic,
   });
 
   /// BCP-47-ish code handed to the neural core (`ar`, `zh-CN`, ...).
@@ -20,6 +22,13 @@ class AppLanguageOption {
 
   final bool rtl;
 
+  /// Arabic name, present for the languages that come from the NLLB catalogue.
+  final String? nameArabic;
+
+  /// Name in the language the UI is currently using.
+  String nameFor(String languageCode) =>
+      languageCode == 'ar' ? (nameArabic ?? nativeName) : name;
+
   String get displayName => nativeName == name ? name : '$name · $nativeName';
 
   @override
@@ -32,7 +41,8 @@ class AppLanguageOption {
 /// [AppLanguageCatalog.byCode] still builds a sensible option for a code that
 /// is not listed.
 abstract final class AppLanguageCatalog {
-  static const List<AppLanguageOption> languages = [
+  /// Hand curated entries: the widely used languages, with their real endonyms.
+  static const List<AppLanguageOption> curated = [
     AppLanguageOption(code: 'ar', name: 'Arabic', nativeName: 'العربية', rtl: true),
     AppLanguageOption(code: 'en', name: 'English', nativeName: 'English'),
     AppLanguageOption(code: 'es', name: 'Spanish', nativeName: 'Español'),
@@ -117,11 +127,53 @@ abstract final class AppLanguageCatalog {
     AppLanguageOption(code: 'yi', name: 'Yiddish', nativeName: 'ייִדיש', rtl: true),
   ];
 
+  /// The full list: the curated entries **plus every language NLLB-200 can
+  /// translate into** (~200 of them), so the picker really does cover the
+  /// world and not just the usual suspects.
+  static List<AppLanguageOption> get languages => _all;
+
+  static late final List<AppLanguageOption> _all = _build();
+
+  static List<AppLanguageOption> _build() {
+    final covered = <String>{
+      for (final option in curated)
+        FloresCatalog.fromBcp47(_baseOf(option.code)).code,
+    };
+    final out = <AppLanguageOption>[...curated];
+    for (final flores in FloresCatalog.languages) {
+      if (covered.contains(flores.code)) continue;
+      out.add(AppLanguageOption(
+        code: flores.code,
+        name: flores.english,
+        nativeName: flores.arabic,
+        nameArabic: flores.arabic,
+        rtl: flores.rtl,
+      ));
+    }
+    return out;
+  }
+
+  static String _baseOf(String code) => code.split('-').first.toLowerCase();
+
   static AppLanguageOption get defaultTarget => byCode('ar');
 
   static AppLanguageOption byCode(String code) => languages.firstWhere(
         (l) => l.code == code,
-        orElse: () => AppLanguageOption(code: code, name: code, nativeName: code),
+        orElse: () {
+          // An unknown code is most likely an NLLB token (`zul_Latn`): name it
+          // from the model catalogue instead of showing a raw string.
+          final flores = FloresCatalog.byCode(code);
+          if (FloresCatalog.knows(code)) {
+            return AppLanguageOption(
+              code: flores.code,
+              name: flores.english,
+              nativeName: flores.arabic,
+              nameArabic: flores.arabic,
+              rtl: flores.rtl,
+            );
+          }
+          return AppLanguageOption(code: code, name: code, nativeName: code);
+        },
       );
 
   /// Case/diacritic insensitive search across codes, names and endonyms.

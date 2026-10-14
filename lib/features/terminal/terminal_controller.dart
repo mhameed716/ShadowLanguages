@@ -148,6 +148,7 @@ class TerminalState {
     this.checkpoint,
     this.verification,
     this.offline = false,
+    this.ocrBlocks = 0,
   });
 
   final JobStage stage;
@@ -188,6 +189,9 @@ class TerminalState {
   /// The device had no usable connection when the job was started.
   final bool offline;
 
+  /// Text regions the offline OCR found inside page images.
+  final int ocrBlocks;
+
   bool get isBusy => stage.isBusy;
   bool get hasFile => file != null;
   bool get hasOutput => output != null;
@@ -223,6 +227,7 @@ class TerminalState {
     JobCheckpoint? checkpoint,
     VerificationReport? verification,
     bool? offline,
+    int? ocrBlocks,
     bool clearFailure = false,
     bool clearFile = false,
     bool clearLayout = false,
@@ -256,6 +261,7 @@ class TerminalState {
         verification:
             clearVerification ? null : (verification ?? this.verification),
         offline: offline ?? this.offline,
+        ocrBlocks: ocrBlocks ?? this.ocrBlocks,
       );
 }
 
@@ -276,6 +282,13 @@ class TerminalController extends Notifier<TerminalState> {
   Uint8List? _sourceBytes;
 
   LogBus get _log => ref.read(logBusProvider);
+
+  /// Identity of the engine, so a checkpoint made with NLLB is never reused by
+  /// the cloud engine (and the other way round).
+  String get _engineName {
+    final settings = ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+    return settings.useOfflineEngine ? 'nllb-200-distilled-600M' : settings.model;
+  }
   Strings get _t => ref.read(stringsProvider);
   PdfEngine get _engine => ref.read(pdfEngineProvider);
   CheckpointRepository get _checkpoints =>
@@ -464,12 +477,59 @@ class TerminalController extends Notifier<TerminalState> {
         '${layout.blockCount} translatable blocks',
       );
 
-      await _loadCheckpoint(file, layout);
-      await _detect(layout);
-      unawaited(_buildPreflight(file, layout));
+      final withImages = await _readImages(file, layout);
+      await _loadCheckpoint(file, withImages);
+      await _detect(withImages);
+      unawaited(_buildPreflight(file, withImages));
     } on Exception catch (e, st) {
       _log.error('Layout extraction failed: $e');
       _fail(Failure.from(e, stack: st));
+    }
+  }
+
+  /// Runs the offline OCR pass so the words inside page images are translated
+  /// too. Failures are logged, never fatal: the book still gets translated,
+  /// only the picture captions stay in their original language.
+  Future<BookLayout> _readImages(PickedFile file, BookLayout layout) async {
+    final settings = ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+    if (!settings.enableOcr) return layout;
+    try {
+      _log.info(_t('ocr_scanning'));
+      Uint8List bytes;
+      try {
+        bytes = _sourceBytes ??= await File(file.path).readAsBytes();
+      } catch (e) {
+        _log.warning('OCR skipped: the source could not be cached ($e)');
+        return layout;
+      }
+      final pipeline = ref.read(translationPipelineProvider);
+      final result = await pipeline.readImagesInPages(
+        sourceBytes: bytes,
+        layout: layout,
+        password: file.password,
+        onProgress: (index, total) {
+          if (index % 10 == 0) {
+            _log.info('  · image scan ${index + 1}/$total');
+          }
+        },
+      );
+      if (result.blocksFound == 0) return layout;
+      state = state.copyWith(
+        layout: result.layout,
+        totalBlocks: result.layout.blockCount,
+        ocrBlocks: result.blocksFound,
+      );
+      _log.success(
+        'OCR: ${result.blocksFound} text region(s) recovered from images '
+        '(${result.pagesScanned} page(s) scanned) — they are drawn over the '
+        'picture with a halo so the artwork stays visible',
+      );
+      return result.layout;
+    } on JobCancelledException {
+      rethrow;
+    } catch (e) {
+      _log.warning('OCR pass skipped: $e');
+      return layout;
     }
   }
 
@@ -480,7 +540,7 @@ class TerminalController extends Notifier<TerminalState> {
         sourcePath: file.path,
         sourceSizeBytes: file.sizeBytes,
         targetLanguageCode: settings.targetLanguageCode,
-        model: settings.model,
+        model: _engineName,
       );
       if (checkpoint == null) return;
       state = state.copyWith(checkpoint: checkpoint);
@@ -495,7 +555,8 @@ class TerminalController extends Notifier<TerminalState> {
 
   Future<void> _detect(BookLayout layout) async {
     final settings = ref.read(settingsProvider).valueOrNull ?? const AppSettings();
-    if (!settings.hasApiKey) {
+    // The on-device engine needs no key: it identifies the language itself.
+    if (!settings.useOfflineEngine && !settings.hasApiKey) {
       _log.warning('No API key configured — open CONFIG to add one');
       return;
     }
@@ -614,7 +675,9 @@ class TerminalController extends Notifier<TerminalState> {
       _fail(Failure(FailureKind.fileMissing, messageKey: 'err_no_file'));
       return;
     }
-    if (!settings.hasApiKey) {
+    // The on-device engine needs no key and no network: only the optional
+    // cloud path is gated on them.
+    if (!settings.useOfflineEngine && !settings.hasApiKey) {
       _fail(Failure(FailureKind.missingKey, messageKey: 'err_no_api_key'));
       return;
     }
@@ -623,20 +686,25 @@ class TerminalController extends Notifier<TerminalState> {
       return;
     }
 
-    // 1. connectivity first: no point burning pages into a dead socket.
-    final online = await _hasNetwork();
-    if (!online) {
-      state = state.copyWith(offline: true);
-      _fail(Failure(
-        FailureKind.network,
-        messageKey: 'err_network',
-        argument: _t('err_network_hint'),
-        canRetry: true,
-        canResume: resume,
-      ));
-      return;
+    if (settings.useOfflineEngine) {
+      _log.system('Engine: NLLB-200 on this device — no network is used');
+      if (state.offline) state = state.copyWith(offline: false);
+    } else {
+      // Cloud path only: no point burning pages into a dead socket.
+      final online = await _hasNetwork();
+      if (!online) {
+        state = state.copyWith(offline: true);
+        _fail(Failure(
+          FailureKind.network,
+          messageKey: 'err_network',
+          argument: _t('err_network_hint'),
+          canRetry: true,
+          canResume: resume,
+        ));
+        return;
+      }
+      if (state.offline) state = state.copyWith(offline: false);
     }
-    if (state.offline) state = state.copyWith(offline: false);
 
     final cancellation = JobCancellation();
     _cancellation = cancellation;
@@ -649,8 +717,9 @@ class TerminalController extends Notifier<TerminalState> {
     );
 
     _log.system(
-      'Injection profile ready: ${target.name} · ${settings.model} · '
-      '${options.concurrency} parallel streams',
+      'Injection profile ready: ${target.name} · '
+      '${settings.useOfflineEngine ? 'NLLB-200 (on-device)' : settings.model} · '
+      '${settings.useOfflineEngine ? 1 : options.concurrency} parallel streams',
     );
 
     JobCheckpoint? checkpoint;
@@ -660,7 +729,7 @@ class TerminalController extends Notifier<TerminalState> {
             sourcePath: file.path,
             sourceSizeBytes: file.sizeBytes,
             targetLanguageCode: settings.targetLanguageCode,
-            model: settings.model,
+            model: _engineName,
           );
       if (checkpoint != null) {
         _log.system(
@@ -675,7 +744,7 @@ class TerminalController extends Notifier<TerminalState> {
       sourcePath: file.path,
       sourceSizeBytes: file.sizeBytes,
       targetLanguageCode: settings.targetLanguageCode,
-      model: settings.model,
+      model: _engineName,
     );
 
     final savedPages = <int>{
@@ -712,7 +781,7 @@ class TerminalController extends Notifier<TerminalState> {
           sourceName: file.name,
           sourceSizeBytes: file.sizeBytes,
           targetLanguageCode: settings.targetLanguageCode,
-          model: settings.model,
+          model: _engineName,
           pageCount: layout.pageCount,
           completedPages: savedPages.toList()..sort(),
           translations: savedTranslations,
