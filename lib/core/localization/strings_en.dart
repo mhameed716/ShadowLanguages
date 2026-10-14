@@ -43,6 +43,9 @@ const Map<String, String> enStrings = <String, String>{
   'abort': 'ABORT',
   'clear_log': 'CLEAR LOG',
   'copy_log': 'COPY LOG',
+  'progress_validating': 'VALIDATING FILE',
+  'progress_verifying': 'VERIFYING LAYOUT',
+  'start_translation': 'START TRANSLATION',
   'progress_idle': 'STANDBY',
   'progress_extracting': 'EXTRACTING LAYOUT',
   'progress_detecting': 'DETECTING LANGUAGE',
@@ -173,4 +176,63 @@ const Map<String, String> enStrings = <String, String>{
   'err_font': 'No bundled font covers the target script',
   'err_storage': 'Could not write to device storage: {message}',
   'err_unknown': 'Unexpected fault: {message}',
-};
+
+  // ------------------------------------------- errors: document & integrity
+  'err_file_empty': 'That file is empty',
+  'err_file_too_large': 'That PDF is too big for this device to process safely',
+  'err_file_unreadable': 'The file could not be read (permissions or damaged storage)',
+  'err_pdf_truncated': 'This PDF is truncated — it looks like an interrupted download',
+  'err_pdf_missing_eof': 'Missing %EOF marker — the document was recovered, output may be incomplete',
+  'err_pdf_no_pages': 'This PDF contains no pages',
+  'err_pdf_password': 'Wrong password — the document stayed locked',
+  'err_rate_limit': 'API rate limit hit — the job can resume once the limit resets',
+  'err_font_coverage': 'The bundled fonts cannot render the target language',
+  'err_memory': 'Not enough memory for this document — close other apps and retry',
+  'err_cancelled': 'Job aborted by operator',
+  'err_network_hint': 'the device has no usable connection',
+  'pdf_ok': 'PDF integrity verified',
+  'log_valid': 'Integrity check passed —',
+
+  // ------------------------------------------------------------- passwords
+  'password_title': 'ENCRYPTED DOCUMENT',
+  'password_body': 'This book is password protected. Enter the password to read its text layer.',
+  'password_label': 'Document password',
+  'password_submit': 'UNLOCK',
+  'password_cancel': 'CANCEL',
+
+  // ---------------------------------------------------------------- resume
+  'resume_title': 'UNFINISHED JOB RECOVERED',
+  'resume_body': 'Pages {done} of {total} were already translated ({percent}).',
+  'resume_cta': 'RESUME',
+  'resume_discard': 'Start over',
+  'resume_saved': 'Progress saved at page {page} — resume picks up there',
+
+  // ------------------------------------------------------------- pre-flight
+  'preflight_title': 'PRE-FLIGHT',
+  'preflight_pages': 'Pages',
+  'preflight_blocks': 'Blocks',
+  'preflight_requests': 'Requests',
+  'preflight_fonts': 'Fonts',
+  'preflight_risks': 'Artwork',
+  'preflight_warnings': 'Warnings',
+  'warn_font_critical': 'The bundled fonts cannot render {language} — expect missing glyphs',
+  'warn_font_partial': 'Partial font coverage for {language} — a few glyphs may be missing',
+  'warn_halo': '{count} block(s) sit on artwork: drawn with a halo, no original pixel erased',
+  'warn_tight': '{count} block(s) inside ruled areas: covered without padding',
+  'warn_dropped': '{count} block(s) kept as authored to avoid damaging the page',
+  'warn_resume_available': 'An unfinished job exists for this file',
+
+  // ----------------------------------------------------------- verification
+  'verify_ok': 'Layout verified — {changed} px changed outside the text boxes',
+  'verify_failed': 'Layout check FAILED — {ratio}% changed outside the text boxes',
+  'verify_skipped': 'Layout check skipped',
+  'verify_pages': '{count} page(s) rendered at {width}px',
+  'retry_cta': 'RETRY',
+  'start_over': 'START OVER',
+
+  'chunk_label': 'Chunk size',
+  'chunk_hint': 'Characters per request. Long paragraphs are split automatically at sentence boundaries.',
+  'clear_checkpoints': 'Clear unfinished jobs',
+  'clear_checkpoints_done': 'Removed {count} unfinished job(s)',
+  'pacing_note': 'Requests are paced automatically and the app honours the API retry delay. Finished pages are checkpointed, so an interrupted job can resume.',
+}

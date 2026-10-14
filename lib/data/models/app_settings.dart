@@ -7,7 +7,9 @@ class AppSettings {
     this.model = 'gemini-2.5-flash',
     this.temperature = 0.2,
     this.targetLanguageCode = 'ar',
-    this.interfaceLanguageCode = 'en',
+    // The app ships Arabic first: the UI, the default target language and the
+    // layout direction all follow this value.
+    this.interfaceLanguageCode = 'ar',
     this.accent = 'green',
     this.keepNumbers = true,
     this.preserveMeaning = true,
@@ -124,7 +126,7 @@ class AppSettings {
         model: '${json['model'] ?? 'gemini-2.5-flash'}',
         temperature: (json['temperature'] as num?)?.toDouble() ?? 0.2,
         targetLanguageCode: '${json['targetLanguageCode'] ?? 'ar'}',
-        interfaceLanguageCode: '${json['interfaceLanguageCode'] ?? 'en'}',
+        interfaceLanguageCode: '${json['interfaceLanguageCode'] ?? 'ar'}',
         accent: '${json['accent'] ?? 'green'}',
         keepNumbers: json['keepNumbers'] as bool? ?? true,
         preserveMeaning: json['preserveMeaning'] as bool? ?? true,

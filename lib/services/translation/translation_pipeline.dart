@@ -3,8 +3,10 @@ import 'dart:async';
 import '../../core/logging/log_entry.dart';
 import '../../core/utils/job_cancellation.dart';
 import '../../data/models/book_layout.dart';
+import '../../data/models/job_checkpoint.dart';
 import '../../data/models/text_block.dart';
 import 'gemini_client.dart';
+import 'rate_limiter.dart';
 import 'translation_options.dart';
 
 /// Terminology memory: keeps the translation of repeated names stable across
@@ -81,13 +83,32 @@ class TranslationPipeline {
   TranslationPipeline({
     required GeminiClient client,
     required LogBus log,
+    RateLimiter? limiter,
+    SmartChunker? chunker,
   })  : _client = client,
-        _log = log;
+        _log = log,
+        _limiter = limiter ?? RateLimiter(),
+        _chunker = chunker ?? const SmartChunker();
 
   final GeminiClient _client;
   final LogBus _log;
 
+  /// Keeps the request rate inside the API limits.
+  final RateLimiter _limiter;
+
+  /// Splits paragraphs that are too big for a single request.
+  final SmartChunker _chunker;
+
   GlossaryMemory glossary = GlossaryMemory();
+
+  /// Refills the glossary with the terminology a previous (interrupted) run
+  /// already established, so a resumed book keeps the same vocabulary.
+  void restoreGlossary(Map<String, String> terms) {
+    if (glossary.length > 0) return;
+    for (final entry in terms.entries) {
+      glossary.learn(entry.key, entry.value);
+    }
+  }
 
   /// Detects the source language from the most representative sample.
   Future<LanguageDetection> detectLanguage(BookLayout layout) async {
@@ -108,65 +129,137 @@ class TranslationPipeline {
   ///
   /// Blocks are grouped page by page (so the context stays coherent) and then
   /// split into batches small enough for one request.
+  ///
+  /// Resume: pass [resumeFrom] and every page it contains is restored from disk
+  /// instead of being sent again. [onPageCompleted] is called after each page
+  /// so the caller can checkpoint it immediately — an interrupted 50 page book
+  /// then costs one page, not forty nine.
   Future<Map<String, String>> translate({
     required BookLayout layout,
     required TranslationOptions options,
-    required JobCancellation cancellation,
+    JobCancellation? cancellation,
     void Function(PipelineProgress progress)? onProgress,
+    JobCheckpoint? resumeFrom,
+    void Function(int pageIndex, Map<String, String> pageTranslations)?
+        onPageCompleted,
+    int? maxPages,
   }) async {
     final translations = <String, String>{};
     final totalBlocks = layout.blockCount;
     var processedBlocks = 0;
     var processedPages = 0;
     var context = '';
+    var restoredPages = 0;
+
+    final done = <int>{
+      if (resumeFrom != null) ...resumeFrom.completedPages,
+    };
+    if (resumeFrom != null) {
+      translations.addAll(resumeFrom.translations);
+      restoreGlossary(resumeFrom.glossary);
+      processedPages = resumeFrom.completedPages.length;
+      processedBlocks = resumeFrom.translations.length;
+    }
 
     for (final page in layout.pages) {
-      cancellation.throwIfCancelled();
+      cancellation?.throwIfCancelled();
+      if (maxPages != null && processedPages >= maxPages) break;
       final blocks = page.blocks.where(_isTranslatable).toList(growable: false);
       if (blocks.isEmpty) {
         processedPages++;
         continue;
       }
 
+      // ------------------------------------------------------- resume a page
+      if (done.contains(page.index)) {
+        final restored = <String, String>{
+          for (final block in blocks)
+            if (translations.containsKey(block.id)) block.id: translations[block.id]!,
+        };
+        restoredPages++;
+        final pageText = blocks.map((b) => b.text).join(' ');
+        context = _tail(context, pageText, options.contextCharacters);
+        onProgress?.call(PipelineProgress(
+          phase: PipelinePhase.translating,
+          processedPages: processedPages,
+          totalPages: layout.pageCount,
+          processedBlocks: processedBlocks,
+          totalBlocks: totalBlocks,
+        ));
+        if (restored.isNotEmpty) {
+          _log.info('Page ${page.index + 1}: restored from checkpoint '
+              '(${restored.length} blocks, no request sent)');
+        }
+        continue;
+      }
+
       _log.info('Translating page ${page.index + 1} to '
           '${options.targetLanguageName} via Neural Core…');
 
-      final batches = _batchOf(blocks, options);
+      // A single monster paragraph must never blow the request up: split it
+      // into sentence sized pieces and stitch the answer back together.
+      final exploded = _explode(blocks, options);
+      final batches = _batchOf(exploded.blocks, options);
       final results = <BlockTranslation>[];
       await _forEachWithConcurrency(
         batches,
         options.concurrency,
         (batch) async {
-          cancellation.throwIfCancelled();
-          final translated = await _client.translateBatch(
-            blocks: batch,
-            options: options,
-            context: context,
-            glossary: options.useGlossary ? glossary.terms : const {},
-            cancellation: cancellation,
-          );
-          results.addAll(translated);
+          cancellation?.throwIfCancelled();
+          await _limiter.acquire();
+          try {
+            final translated = await _client.translateBatch(
+              blocks: batch,
+              options: options,
+              context: context,
+              glossary: options.useGlossary ? glossary.terms : const {},
+              cancellation: cancellation,
+            );
+            _limiter.success();
+            results.addAll(translated);
+          } on TranslationException catch (e) {
+            if (e.kind == TranslationErrorKind.quota ||
+                e.kind == TranslationErrorKind.rateLimit) {
+              final wait = _limiter.failure(retryAfter: e.retryAfter);
+              _log.warning(
+                  'API limit hit — cooling down ${wait.inSeconds}s before '
+                  'continuing');
+              // The page is simply retried by the caller/resume path.
+            } else {
+              _limiter.failure();
+            }
+            rethrow;
+          } catch (_) {
+            _limiter.failure();
+            rethrow;
+          }
         },
       );
 
       final byId = <String, String>{
         for (final t in results) t.id: t.text,
       };
-      for (final block in blocks) {
+      final pageTranslations = <String, String>{};
+      for (final block in exploded.blocks) {
         final value = byId[block.id];
         if (value != null && value.trim().isNotEmpty) {
-          translations[block.id] = value.trim();
-          if (options.useGlossary) {
-            glossary.learnFromPair(block.text, value);
+          final target = exploded.originalIdOf(block.id);
+          final text = value.trim();
+          exploded.mergeInto(pageTranslations, target, block.id, text);
+          translations[target] = pageTranslations[target] ?? text;
+          if (options.useGlossary && target == block.id) {
+            glossary.learnFromPair(block.text, text);
           }
         }
-        processedBlocks++;
+        if (exploded.isPrimary(block.id)) processedBlocks++;
+      }
+      if (pageTranslations.isNotEmpty) {
+        translations.addAll(pageTranslations);
+        onPageCompleted?.call(page.index, pageTranslations);
       }
 
       final pageText = blocks.map((b) => b.text).join(' ');
-      context = pageText.length > options.contextCharacters
-          ? pageText.substring(pageText.length - options.contextCharacters)
-          : pageText;
+      context = _tail(context, pageText, options.contextCharacters);
       processedPages++;
 
       _log.success(
@@ -182,8 +275,74 @@ class TranslationPipeline {
       ));
     }
 
+    if (restoredPages > 0) {
+      _log.info('Resumed: $restoredPages page(s) came from the checkpoint, '
+          'no tokens spent on them');
+    }
+
     return translations;
   }
+
+  static String _tail(String previous, String pageText, int maxChars) {
+    final combined = previous.isEmpty ? pageText : '$previous $pageText';
+    return combined.length > maxChars
+        ? combined.substring(combined.length - maxChars)
+        : combined;
+  }
+
+  /// Splits blocks that are longer than one request may carry.
+  _ExplodedBlocks _explode(
+      List<TextBlock> blocks, TranslationOptions options) {
+    final limit = options.maxCharactersPerRequest;
+    final out = <TextBlock>[];
+    final parents = <String, String>{};
+    for (final block in blocks) {
+      if (block.text.length <= limit) {
+        out.add(block);
+        continue;
+      }
+      final pieces = _chunker.chunk(block.text);
+      if (pieces.length <= 1) {
+        out.add(block);
+        continue;
+      }
+      for (var i = 0; i < pieces.length; i++) {
+        final id = '${block.id}#$i';
+        parents[id] = block.id;
+        out.add(block.copyWith(text: pieces[i]));
+      }
+      _log.info('Block ${block.id} split into ${pieces.length} pieces '
+          '(too long for one request)');
+    }
+    return _ExplodedBlocks(out, parents);
+  }
+
+/// The result of splitting oversized blocks into request sized pieces.
+class _ExplodedBlocks {
+  _ExplodedBlocks(this.blocks, this._parents);
+
+  /// Blocks as they are sent: originals plus the synthetic pieces, always in
+  /// reading order so stitching the answers back together is deterministic.
+  final List<TextBlock> blocks;
+
+  /// `piece id → original block id`.
+  final Map<String, String> _parents;
+
+  bool isPrimary(String id) => !_parents.containsKey(id);
+
+  String originalIdOf(String id) => _parents[id] ?? id;
+
+  /// Appends [text] to [out] under [target], keeping the piece order.
+  void mergeInto(
+      Map<String, String> out, String target, String pieceId, String text) {
+    if (pieceId == target) {
+      out[target] = text;
+      return;
+    }
+    final current = out[target];
+    out[target] = current == null || current.isEmpty ? text : '$current $text';
+  }
+}
 
   static int _charsIn(List<BlockTranslation> items) =>
       items.fold<int>(0, (s, t) => s + t.text.length);

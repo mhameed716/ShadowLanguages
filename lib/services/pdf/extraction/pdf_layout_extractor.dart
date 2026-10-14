@@ -4,6 +4,7 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../../../data/models/book_layout.dart';
 import '../../../data/models/text_block.dart';
+import '../../../core/error/failure.dart';
 import '../inject/pdf_geometry.dart';
 import 'background_sampler.dart';
 
@@ -32,10 +33,21 @@ class PdfLayoutExtractor {
     void Function(int pageIndex, int pageCount)? onProgress,
     void Function(String message)? onLog,
   }) async {
-    final document = await PdfDocument.openFile(
-      path,
-      passwordProvider: password == null ? null : (_) async => password,
-    );
+    PdfDocument document;
+    try {
+      document = await PdfDocument.openFile(
+        path,
+        // createSimplePasswordProvider() returns the password once and then
+        // null: a wrong password fails fast instead of looping forever.
+        passwordProvider:
+            password == null ? null : createSimplePasswordProvider(password),
+        firstAttemptByEmptyPassword: password == null,
+      );
+    } on PdfPasswordException catch (e) {
+      throw PdfShieldedException(e.message, encrypted: password == null);
+    } on PdfException catch (e) {
+      throw PdfParseException(e.message);
+    }
     try {
       final pages = <PageLayout>[];
       final pageCount = document.pages.length;

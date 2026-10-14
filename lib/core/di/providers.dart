@@ -4,10 +4,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/models/app_settings.dart';
 import '../../data/models/saved_book.dart';
+import '../../data/repositories/checkpoint_repository.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../services/pdf/pdf_engine.dart';
 import '../../services/translation/gemini_client.dart';
+import '../../services/translation/rate_limiter.dart';
 import '../../services/translation/translation_pipeline.dart';
 import '../localization/strings.dart';
 import '../logging/log_entry.dart';
@@ -31,6 +33,11 @@ final libraryRepositoryProvider = Provider<LibraryRepository>((ref) {
   return LibraryRepository(ref.watch(sharedPreferencesProvider));
 });
 
+/// Stores the progress of interrupted jobs so they can be resumed.
+final checkpointRepositoryProvider = Provider<CheckpointRepository>((ref) {
+  return CheckpointRepository(ref.watch(sharedPreferencesProvider));
+});
+
 // ----------------------------------------------------------------- services
 final logBusProvider = Provider<LogBus>((ref) => LogBus());
 
@@ -48,17 +55,22 @@ final geminiClientProvider = Provider<GeminiClient>((ref) {
   );
 });
 
+/// One limiter for the whole app: every worker of every job shares it, so a
+/// big book can not flood the API.
+final rateLimiterProvider = Provider<RateLimiter>((ref) => RateLimiter());
+
 final translationPipelineProvider = Provider<TranslationPipeline>((ref) {
   return TranslationPipeline(
     client: ref.watch(geminiClientProvider),
     log: ref.watch(logBusProvider),
+    limiter: ref.watch(rateLimiterProvider),
   );
 });
 
 // -------------------------------------------------------------- localisation
 final stringsProvider = Provider<Strings>((ref) {
   final settings = ref.watch(settingsProvider).valueOrNull;
-  return Strings(settings?.interfaceLanguageCode ?? 'en');
+  return Strings(settings?.interfaceLanguageCode ?? 'ar');
 });
 
 // ------------------------------------------------------------------ library

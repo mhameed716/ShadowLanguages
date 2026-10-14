@@ -41,6 +41,8 @@ final class _TextOp extends _DrawOp {
     required this.size,
     required this.color,
     required this.segments,
+    this.halo = false,
+    this.haloColor,
   });
 
   final double x;
@@ -48,6 +50,16 @@ final class _TextOp extends _DrawOp {
   final double size;
   final PdfColor color;
   final List<PdfGlyphSegment> segments;
+
+  /// Draw the glyphs in "fill + stroke" mode with a contrasting outline.
+  ///
+  /// Used when the translation sits on top of artwork: stroking in the page
+  /// colour keeps the text readable **without** erasing a single original pixel
+  /// (a cover rectangle would destroy the picture underneath).
+  final bool halo;
+
+  /// Outline colour (usually the sampled page colour, or its inverse).
+  final PdfColor? haloColor;
 }
 
 /// Collects the operations that redraw one page:
@@ -70,12 +82,17 @@ class PageOverlayPainter {
   }
 
   /// Draws one visual line of translated text.
+  ///
+  /// [halo] switches the text to fill+stroke mode so it stays legible over
+  /// images, gradients and tinted panels where a cover rectangle is forbidden.
   void drawLine({
     required double x,
     required double baselineY,
     required double size,
     required PdfColor color,
     required List<PdfGlyphSegment> segments,
+    bool halo = false,
+    PdfColor? haloColor,
   }) {
     if (segments.isEmpty) return;
     _ops.add(_TextOp(
@@ -84,6 +101,8 @@ class PageOverlayPainter {
       size: size,
       color: color,
       segments: segments,
+      halo: halo,
+      haloColor: haloColor,
     ));
   }
 
@@ -103,8 +122,22 @@ class PageOverlayPainter {
             :final size,
             :final color,
             :final segments,
+            :final halo,
+            :final haloColor,
           ):
           sb.writeln('BT');
+          if (halo) {
+            // 2 Tr = fill then stroke. The stroke paints a thin outline in the
+            // page colour around every glyph: the artwork stays visible behind
+            // the letters, the letters stay readable on top of it.
+            final outline = haloColor ?? _fallbackHalo(color);
+            sb.writeln('2 Tr');
+            sb.writeln('${_n((size * 0.075).clamp(0.25, 1.2))} w');
+            sb.writeln('1 J 1 j');
+            sb.writeln('${outline.operands} RG');
+          } else {
+            sb.writeln('0 Tr');
+          }
           for (final seg in segments) {
             final name = fontResourceNames[seg.fontTag];
             if (name == null || seg.glyphIds.isEmpty) continue;
@@ -113,12 +146,18 @@ class PageOverlayPainter {
             sb.writeln('1 0 0 1 ${_n(x + seg.offsetX)} ${_n(baselineY)} Tm');
             sb.writeln('<${_hex(seg.glyphIds)}> Tj');
           }
+          if (halo) sb.writeln('0 Tr');
           sb.writeln('ET');
       }
     }
     sb.write('Q\n');
     return PdfFilters.deflate(Uint8List.fromList(latin1.encode(sb.toString())));
   }
+
+  /// Outline colour used when no page colour could be sampled: the inverse of
+  /// the ink, so dark text gets a light halo and light text a dark one.
+  static PdfColor _fallbackHalo(PdfColor ink) =>
+      ink.luminance > 0.5 ? const PdfColor.black() : const PdfColor.white();
 
   static String _n(double v) => v.toStringAsFixed(4);
 

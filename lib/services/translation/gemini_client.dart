@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show HttpDate;
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
@@ -12,6 +13,7 @@ enum TranslationErrorKind {
   missingKey,
   invalidKey,
   quota,
+  rateLimit,
   server,
   network,
   timeout,
@@ -21,11 +23,19 @@ enum TranslationErrorKind {
 }
 
 class TranslationException implements Exception {
-  const TranslationException(this.kind, this.message, {this.statusCode});
+  const TranslationException(
+    this.kind,
+    this.message, {
+    this.statusCode,
+    this.retryAfter,
+  });
 
   final TranslationErrorKind kind;
   final String message;
   final int? statusCode;
+
+  /// `Retry-After` sent by the API on 429/503: how long to wait, if it said.
+  final Duration? retryAfter;
 
   @override
   String toString() => 'TranslationException(${kind.name}): $message';
@@ -358,9 +368,18 @@ class GeminiClient {
             );
           }
           if (status == 429) {
+            final retryAfter = _retryAfterOf(e.response);
+            if (retryAfter != null) {
+              // Respect the server: wait exactly as long as it asked.
+              await Future<void>.delayed(retryAfter);
+            }
             if (attempt >= maxAttempts) {
-              throw TranslationException(TranslationErrorKind.quota, message,
-                  statusCode: status);
+              throw TranslationException(
+                TranslationErrorKind.rateLimit,
+                message,
+                statusCode: status,
+                retryAfter: retryAfter,
+              );
             }
           } else if (status >= 500) {
             if (attempt >= maxAttempts) {
@@ -400,6 +419,24 @@ class GeminiClient {
           promptTokens: prompt is num ? prompt.toInt() : 0,
           responseTokens: response is num ? response.toInt() : 0,
         );
+  }
+
+  /// Parses the `Retry-After` header (seconds, or an HTTP date).
+  static Duration? _retryAfterOf(Response<dynamic>? response) {
+    final value = response?.headers.value('retry-after');
+    if (value == null) return null;
+    final seconds = int.tryParse(value.trim());
+    if (seconds != null) {
+      return Duration(seconds: seconds.clamp(1, 300));
+    }
+    try {
+      final date = HttpDate.parse(value);
+      final delta = date.difference(DateTime.now());
+      if (delta.inSeconds <= 0) return null;
+      return Duration(seconds: delta.inSeconds.clamp(1, 300));
+    } catch (_) {
+      return null;
+    }
   }
 
   static String _messageFromError(Object? data) {

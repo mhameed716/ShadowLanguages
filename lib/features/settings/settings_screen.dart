@@ -176,6 +176,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 children: [
                   SizedBox(
                     width: 70,
+                    child: Text(t('chunk_label'), style: theme.bodySmall),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: (settings?.maxCharactersPerRequest ?? 1800)
+                          .toDouble()
+                          .clamp(600, 4000),
+                      divisions: 17,
+                      min: 600,
+                      max: 4000,
+                      label: '${settings?.maxCharactersPerRequest ?? 1800}',
+                      onChanged: (value) =>
+                          controller.setMaxCharacters(value.round()),
+                    ),
+                  ),
+                  Text('${settings?.maxCharactersPerRequest ?? 1800}',
+                      style: theme.labelSmall),
+                ],
+              ),
+              Text(
+                t('chunk_hint'),
+                style: theme.bodySmall?.copyWith(fontSize: 11),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  SizedBox(
+                    width: 70,
                     child: Text(t('concurrency_label'), style: theme.bodySmall),
                   ),
                   Expanded(
@@ -304,6 +332,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 icon: const Icon(Icons.cleaning_services, size: 16),
                 label: Text(t('clear_cache')),
               ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final removed = await ref
+                      .read(checkpointRepositoryProvider)
+                      .clearStale();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                            t('clear_checkpoints_done', {'count': '$removed'})),
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.restart_alt, size: 16),
+                label: Text(t('clear_checkpoints')),
+              ),
+              const SizedBox(height: 8),
+              Text(t('pacing_note'), style: theme.bodySmall?.copyWith(fontSize: 11)),
               const SizedBox(height: 14),
               Text(t('library_title'), style: theme.bodySmall),
               const SizedBox(height: 8),

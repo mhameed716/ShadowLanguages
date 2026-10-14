@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/di/providers.dart';
+import '../../core/error/failure.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/utils/formatters.dart';
+import '../../services/pdf/verification/layout_verifier.dart';
 import '../../services/translation/language_catalog.dart';
-import '../terminal/terminal_controller.dart';
+import '../../shared/widgets/log_stream.dart';
+import '../../shared/widgets/neon_progress.dart';
+import 'terminal_controller.dart';
 import 'widgets/detection_line.dart';
 import 'widgets/language_sheet.dart';
 import 'widgets/upload_zone.dart';
@@ -45,7 +49,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final theme = AppTypography.buildTextTheme();
     final accent = widget.accent;
 
-    return ListView(
+    return Stack(
+      children: [
+    ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         // ------------------------------------------------------------ header
@@ -104,6 +110,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           onRetry: controller.retryDetection,
         ),
         const SizedBox(height: 14),
+
+        // --------------------------------------------------------- pre-flight
+        if (state.preflight != null) ...[
+          _PreflightCard(preflight: state.preflight!, accent: accent),
+          const SizedBox(height: 14),
+        ],
+        if (state.checkpoint != null && !state.isBusy) ...[
+          _ResumeCard(checkpoint: state.checkpoint!, accent: accent),
+          const SizedBox(height: 14),
+        ],
 
         // ------------------------------------------------------------- stats
         if (state.layout != null) _StatsRow(state: state, accent: accent),
@@ -172,14 +188,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             ),
           ),
         ],
-        if (state.errorKey != null) ...[
+        if (state.failure != null) ...[
           const SizedBox(height: 12),
-          _ErrorCard(
-            message: t(state.errorKey!, {
-              if (state.errorArgument != null) 'message': state.errorArgument!,
-              if (state.errorArgument != null) 'code': state.errorArgument!,
-            }),
-          ),
+          _FailureCard(failure: state.failure!, accent: accent),
+        ],
+        if (state.verification != null) ...[
+          const SizedBox(height: 10),
+          _VerificationLine(report: state.verification!, accent: accent),
         ],
         const SizedBox(height: 16),
 
@@ -205,6 +220,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           '${t('engine_model')}: ${settings?.model ?? '—'}',
           style: theme.labelSmall,
         ),
+      ],
+    ),
+        if (state.askingPassword)
+          _PasswordOverlay(accent: accent, controller: controller),
       ],
     );
   }
@@ -352,32 +371,450 @@ class _StatTile extends StatelessWidget {
   }
 }
 
-class _ErrorCard extends StatelessWidget {
-  const _ErrorCard({required this.message});
+/// Failure with the recovery actions that actually make sense.
+class _FailureCard extends ConsumerWidget {
+  const _FailureCard({required this.failure, required this.accent});
 
-  final String message;
+  final Failure failure;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    final controller = ref.read(terminalControllerProvider.notifier);
+    final theme = AppTypography.buildTextTheme();
+    final argument = failure.argument ?? '';
+    final message = t(failure.messageKey, {
+      'message': argument,
+      'code': argument,
+      'language': argument,
+      'count': argument,
+      'ratio': argument,
+      'changed': argument,
+      'page': argument,
+      'total': argument,
+      'done': argument,
+      'percent': argument,
+      'width': argument,
+    });
+    final color = failure.isCancelled ? AppColors.warning : AppColors.danger;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.error_outline, color: color, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: theme.bodySmall?.copyWith(color: color),
+                ),
+              ),
+            ],
+          ),
+          if (failure.kind == FailureKind.pdfEncrypted ||
+              failure.canResume ||
+              failure.canRetry) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (failure.kind == FailureKind.pdfEncrypted ||
+                    failure.kind == FailureKind.pdfWrongPassword)
+                  OutlinedButton.icon(
+                    onPressed: controller.requestPassword,
+                    icon: const Icon(Icons.lock_open, size: 16),
+                    label: Text(t('password_submit')),
+                  ),
+                if (failure.canResume)
+                  FilledButton.icon(
+                    onPressed: controller.resume,
+                    icon: const Icon(Icons.play_arrow, size: 16),
+                    label: Text(t('resume_cta')),
+                  ),
+                if (failure.canRetry)
+                  OutlinedButton.icon(
+                    onPressed: controller.retry,
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: Text(t('retry_cta')),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Cost, fonts and artwork risk, computed before the first request.
+class _PreflightCard extends ConsumerWidget {
+  const _PreflightCard({required this.preflight, required this.accent});
+
+  final PreflightReport preflight;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    final theme = AppTypography.buildTextTheme();
+    final font = preflight.font;
+    final fontColor = font.isCritical
+        ? AppColors.danger
+        : font.isPartial
+            ? AppColors.warning
+            : AppColors.success;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.panelBlack,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.fact_check_outlined, size: 16, color: accent),
+              const SizedBox(width: 8),
+              Text(
+                t('preflight_title'),
+                style: theme.labelSmall?.copyWith(color: accent, letterSpacing: 1.4),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                  child: _PreflightStat(
+                      label: t('preflight_pages'),
+                      value: '${preflight.pages}')),
+              Expanded(
+                  child: _PreflightStat(
+                      label: t('preflight_blocks'),
+                      value: '${preflight.blocks}')),
+              Expanded(
+                  child: _PreflightStat(
+                      label: t('preflight_requests'),
+                      value: '~${preflight.estimatedRequests}')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _PreflightStat(
+                  label: t('preflight_fonts'),
+                  value: '${(font.ratio * 100).toStringAsFixed(0)}%',
+                  color: fontColor,
+                ),
+              ),
+              Expanded(
+                child: _PreflightStat(
+                  label: t('preflight_risks'),
+                  value: '${preflight.placements?.riskyBlocks ?? 0}',
+                  color: (preflight.placements?.riskyBlocks ?? 0) > 0
+                      ? AppColors.warning
+                      : AppColors.success,
+                ),
+              ),
+              Expanded(
+                child: _PreflightStat(
+                  label: t('preflight_warnings'),
+                  value: '${preflight.warnings.length}',
+                  color: preflight.hasWarnings
+                      ? AppColors.warning
+                      : AppColors.success,
+                ),
+              ),
+            ],
+          ),
+          if (preflight.hasWarnings) ...[
+            const SizedBox(height: 10),
+            for (final warning in preflight.warnings.take(4))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 13, color: AppColors.warning),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(warning, style: theme.labelSmall),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PreflightStat extends StatelessWidget {
+  const _PreflightStat({required this.label, required this.value, this.color});
+
+  final String label;
+  final String value;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     final theme = AppTypography.buildTextTheme();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: theme.labelSmall?.copyWith(fontSize: 9),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: theme.bodyMedium?.copyWith(color: color ?? AppColors.textPrimary),
+        ),
+      ],
+    );
+  }
+}
+
+/// "You already translated 32 pages" — continue or throw it away.
+class _ResumeCard extends ConsumerWidget {
+  const _ResumeCard({required this.checkpoint, required this.accent});
+
+  final JobCheckpoint checkpoint;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    final controller = ref.read(terminalControllerProvider.notifier);
+    final theme = AppTypography.buildTextTheme();
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.danger.withValues(alpha: 0.08),
+        color: AppColors.warning.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.danger.withValues(alpha: 0.35)),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.restore, size: 16, color: AppColors.warning),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  t('resume_title'),
+                  style: theme.labelSmall?.copyWith(
+                      color: AppColors.warning, letterSpacing: 1.4),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            t('resume_body', {
+              'done': '${checkpoint.completedCount}',
+              'total': '${checkpoint.pageCount}',
+              'percent': Formatters.percent(checkpoint.ratio),
+            }),
+            style: theme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              FilledButton.icon(
+                onPressed: controller.resume,
+                icon: const Icon(Icons.play_arrow, size: 16),
+                label: Text(t('resume_cta')),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.warning.withValues(alpha: 0.2),
+                  foregroundColor: AppColors.warning,
+                  side: const BorderSide(color: AppColors.warning),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: controller.discardCheckpoint,
+                child: Text(t('resume_discard')),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Result of the pixel diff between the original and the translated book.
+class _VerificationLine extends ConsumerWidget {
+  const _VerificationLine({required this.report, required this.accent});
+
+  final VerificationReport report;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = ref.watch(stringsProvider);
+    final theme = AppTypography.buildTextTheme();
+    final ok = report.passed;
+    final color = ok ? AppColors.success : AppColors.danger;
+    final message = ok
+        ? t('verify_ok', {'changed': '${report.totalChanged}'})
+        : t('verify_failed',
+            {'ratio': (report.worstRatio * 100).toStringAsFixed(2)});
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.error_outline, color: AppColors.danger, size: 18),
-          const SizedBox(width: 10),
+          Icon(ok ? Icons.verified_outlined : Icons.warning_amber_rounded,
+              size: 16, color: color),
+          const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              message,
-              style: theme.bodySmall?.copyWith(color: AppColors.danger),
-            ),
+            child: Text(message,
+                style: theme.labelSmall?.copyWith(color: color)),
+          ),
+          Text(
+            t('verify_pages', {
+              'count': '${report.checkedPages}',
+              'width': '${report.renderWidth}',
+            }),
+            style: theme.labelSmall,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Modal that asks for the password of a protected document.
+class _PasswordOverlay extends ConsumerStatefulWidget {
+  const _PasswordOverlay({required this.accent, required this.controller});
+
+  final Color accent;
+  final TerminalController controller;
+
+  @override
+  ConsumerState<_PasswordOverlay> createState() => _PasswordOverlayState();
+}
+
+class _PasswordOverlayState extends ConsumerState<_PasswordOverlay> {
+  final TextEditingController _field = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final value = _field.text;
+    await widget.controller.submitPassword(value);
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ref.watch(stringsProvider);
+    final theme = AppTypography.buildTextTheme();
+    final accent = widget.accent;
+
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.72),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(28),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppColors.panelBlack,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: accent.withValues(alpha: 0.35)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.lock_outline, color: accent, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          t('password_title'),
+                          style: theme.titleSmall?.copyWith(color: accent),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(t('password_body'), style: theme.bodySmall),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _field,
+                    obscureText: true,
+                    autofocus: true,
+                    style: AppTypography.logLine,
+                    decoration: InputDecoration(labelText: t('password_label')),
+                    onSubmitted: (_) => _submit(),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _busy ? null : _submit,
+                          icon: _busy
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.lock_open, size: 16),
+                          label: Text(t('password_submit')),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      TextButton(
+                        onPressed: _busy ? null : widget.controller.cancelPassword,
+                        child: Text(t('password_cancel')),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
